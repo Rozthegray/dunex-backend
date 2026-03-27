@@ -302,17 +302,14 @@ async def active_trade_adjust(
 ):
     """
     ACTIVE TRADE SETTLEMENT: 
-    When the timer hits zero, physically moves USD payout to the main wallet and logs it.
+    Adjusts the Crypto Sub-Wallet directly. Does not touch the USD Wallet.
     """
     try:
         current_price = await _fetch_live_price(payload.symbol)
         
-        # Lock both wallets
-        usd_wallet = (await db.execute(select(Wallet).where(Wallet.user_id == current_user.id).with_for_update())).scalar_one_or_none()
+        # Lock only the crypto sub-wallet
         sub_wallet = (await db.execute(select(SubWallet).where(SubWallet.user_id == current_user.id, SubWallet.symbol == payload.symbol).with_for_update())).scalar_one_or_none()
 
-        if not usd_wallet:
-            raise HTTPException(status_code=400, detail="Main USD wallet not found.")
         if not sub_wallet:
             sub_wallet = SubWallet(user_id=current_user.id, symbol=payload.symbol, balance=0.0)
             db.add(sub_wallet)
@@ -326,20 +323,8 @@ async def active_trade_adjust(
             sub_wallet.balance += payload.amount_crypto # Payload is negative
             
         else:
-            # 🚨 NEW: Closing the trade: Pay the profit DIRECTLY into the Main USD Wallet
-            payout_usd = payload.amount_crypto * current_price
-            usd_wallet.cached_balance += payout_usd
-            
-            # 🚨 NEW: Create the Ledger Receipt so it shows up in history
-            ledger = LedgerTransaction(
-                wallet_id=usd_wallet.id,
-                amount=payout_usd,
-                transaction_type="trade_settlement",
-                status="completed",
-                reference=f"SETTLE-{uuid.uuid4().hex[:8].upper()}",
-                destination_details=f"Active {payload.symbol} Settlement"
-            )
-            db.add(ledger)
+            # 🚨 FIX: Closing the trade: Pay the remaining crypto/profit DIRECTLY back to the Crypto Sub-Wallet
+            sub_wallet.balance += payload.amount_crypto
 
         # Log the execution
         log = TradeExecution(
@@ -354,14 +339,12 @@ async def active_trade_adjust(
         db.add(log)
         
         await db.commit()
-        await db.refresh(usd_wallet)
         await db.refresh(sub_wallet)
 
         return {
             "status": "success", 
             "action": action, 
-            "new_crypto_balance": float(sub_wallet.balance),
-            "new_usd_balance": float(usd_wallet.cached_balance)
+            "new_crypto_balance": float(sub_wallet.balance)
         }
 
     except HTTPException:
