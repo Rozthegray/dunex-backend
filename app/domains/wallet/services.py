@@ -4,6 +4,48 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException, status
 from app.domains.wallet.models import Wallet, LedgerTransaction
 
+async def execute_deposit(
+    db: AsyncSession, 
+    wallet_id: uuid.UUID, 
+    amount: float, 
+    reference: str,
+    payment_method: str = None,
+    receipt_url: str = None
+):
+    """
+    Registers a deposit request. Funds are held in a pending state 
+    until an administrator verifies and clears the transaction.
+    """
+    if amount <= 0:
+        raise ValueError("Deposit amount must be strictly positive.")
+
+    # 1. Verify the wallet exists
+    query = select(Wallet).where(Wallet.id == wallet_id)
+    result = await db.execute(query)
+    wallet = result.scalar_one_or_none()
+
+    if not wallet:
+        raise HTTPException(status_code=404, detail="Wallet not found.")
+
+    # 2. Create the immutable ledger record (Credit)
+    transaction = LedgerTransaction(
+        wallet_id=wallet_id,
+        amount=amount,  # Positive amount for deposits
+        transaction_type="deposit",
+        status="pending",  # Strict pending lock
+        reference=reference,
+        # Uncomment these if you added them to your LedgerTransaction model
+        # payment_method=payment_method,
+        # receipt_url=receipt_url
+    )
+    db.add(transaction)
+
+    # 3. Commit the transaction block (Balance remains unchanged until admin approval)
+    await db.commit()
+    await db.refresh(transaction)
+    
+    return transaction
+
 async def execute_withdrawal(
     db: AsyncSession, 
     wallet_id: uuid.UUID, 
