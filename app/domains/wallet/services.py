@@ -4,6 +4,53 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException, status
 from app.domains.wallet.models import Wallet, LedgerTransaction
 
+async def execute_trade_settlement(
+    db: AsyncSession, 
+    user_id: uuid.UUID, 
+    amount_usd: float, 
+    trade_type: str, # e.g., 'TRADE_OPEN_DEBIT' or 'TRADE_CLOSE_CREDIT'
+    reference: str
+):
+    """
+    Adjusts the main USD wallet for trading activity.
+    Negative amounts deduct (buying/opening trade).
+    Positive amounts credit (selling/winning trade).
+    """
+    # 1. Locate the user's wallet and lock the row to prevent race conditions
+    query = select(Wallet).where(Wallet.user_id == user_id).with_for_update()
+    result = await db.execute(query)
+    wallet = result.scalar_one_or_none()
+
+    if not wallet:
+        raise HTTPException(status_code=404, detail="Wallet not found.")
+
+    # 2. Check for sufficient funds if it's a deduction (amount_usd is negative)
+    if amount_usd < 0 and wallet.cached_balance < abs(amount_usd):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="Insufficient USD balance to execute trade."
+        )
+
+    # 3. Create the immutable ledger record for the trade
+    transaction = LedgerTransaction(
+        wallet_id=wallet.id,
+        amount=amount_usd, 
+        transaction_type="trade_settlement",
+        status="completed", # Trades settle instantly
+        reference=reference,
+        destination_details=trade_type 
+    )
+    db.add(transaction)
+
+    # 4. Physically alter the wallet balance
+    wallet.cached_balance += amount_usd
+
+    # 5. Commit the block
+    await db.commit()
+    await db.refresh(wallet)
+    
+    return wallet.cached_balance
+
 async def execute_deposit(
     db: AsyncSession, 
     wallet_id: uuid.UUID, 
