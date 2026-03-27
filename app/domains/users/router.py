@@ -198,7 +198,8 @@ async def list_payment_methods(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(PaymentMethod).where(PaymentMethod.user_id == current_user.id)
+
+query = select(PaymentMethod).where(PaymentMethod.is_active == True)  
     )
     methods = result.scalars().all()
     return [
