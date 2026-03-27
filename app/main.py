@@ -37,11 +37,10 @@ sentry_sdk.init(
 async def lifespan(app: FastAPI):
     print("System Booting: Initializing secure connections...")
     
-    # This will now detect User, Wallet, PaymentMethod, etc. and create them!
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        print("Database Tables Verified & Synced!")
-        
+    # 🚨 REMOVED: Base.metadata.create_all
+    # Schema generation is removed to prevent Render boot timeouts.
+    # Tables are already synced in the Neon vault.
+    
     yield
     print("System Shutting Down: Closing database pools...")
 
