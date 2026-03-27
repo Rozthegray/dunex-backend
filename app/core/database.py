@@ -20,6 +20,10 @@ engine = create_async_engine(
     echo=False,
     future=True,
     poolclass=NullPool, 
+    pool_pre_ping=True,      # Tests the connection before every query
+    pool_size=5,             # Keeps 5 active connections ready
+    max_overflow=10,         # Allows up to 10 extra connections during traffic spikes
+    pool_recycle=1800        # Re
 )
 
 AsyncSessionLocal = sessionmaker(
