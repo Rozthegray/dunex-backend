@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Boolean, DateTime
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -13,19 +13,19 @@ class SiteSettings(Base):
     # Core Engines
     trading_enabled = Column(Boolean, default=True)
     withdrawals_enabled = Column(Boolean, default=True)
-    deposits_enabled = Column(Boolean, default=True)  # 🚨 NEW
+    deposits_enabled = Column(Boolean, default=True)  
     
     # Defense Protocols
     maintenance_mode = Column(Boolean, default=False)
-    maintenance_message = Column(String, nullable=True)  # 🚨 NEW
+    maintenance_message = Column(String, nullable=True)  
     
     # Security & Limits
-    kyc_required_for_withdrawal = Column(Boolean, default=False)  # 🚨 NEW
-    min_withdrawal_usd = Column(String, default="50")  # 🚨 NEW
-    max_withdrawal_usd = Column(String, default="100000")  # 🚨 NEW
+    kyc_required_for_withdrawal = Column(Boolean, default=False)  
+    min_withdrawal_usd = Column(String, default="50")  
+    max_withdrawal_usd = Column(String, default="100000")  
     
     supported_currencies = Column(JSONB, default=["USD", "NGN", "BTC", "USDT"])
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow) # 🚨 NEW
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow) 
 
 class User(Base):
     __tablename__ = "users"
@@ -41,12 +41,42 @@ class User(Base):
     # --- New KYC Fields ---
     kyc_status = Column(String, default="unverified")
     dob = Column(String, nullable=True)
-    ssn = Column(String, nullable=True)
     id_card_url = Column(String, nullable=True)
     govt_id_url = Column(String, nullable=True)
-    
+    gender = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    address = Column(String, nullable=True)
+    country = Column(String, nullable=True)
+    id_number = Column(String, nullable=True) # Replaces the old 'ssn'
+
     created_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
 
+    # 🚨 NEW: AFFILIATE REFERRAL ENGINE FIELDS 🚨
+    referral_code = Column(String(50), unique=True, index=True, nullable=True)
+    referred_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    # ---------------------------------------------------------
     # Relationships
+    # ---------------------------------------------------------
     wallets = relationship("Wallet", back_populates="owner")
+    
+    # 🚨 Self-referential relationship so a User can "own" other Users in the tree
+    referred_by = relationship("User", remote_side=[id], backref="referrals")
+
+    # 🚨 THE FIX: Perfectly matches "owner" in UserPayoutAccount
+    payout_accounts = relationship("UserPayoutAccount", back_populates="owner") 
+
+
+class UserPayoutAccount(Base):
+    __tablename__ = "user_payout_accounts"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    type       = Column(String(20), nullable=False)   # 'bank' | 'crypto'
+    label      = Column(String(120), nullable=False)  # "Chase Checking", "BTC Wallet"
+    details    = Column(String(255), nullable=False)  # account number or wallet address
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # 🚨 Perfectly matches "payout_accounts" in User
+    owner = relationship("User", back_populates="payout_accounts")
