@@ -30,3 +30,8 @@ class PasswordResetConfirm(BaseModel):
     email: str
     code: str
     new_password: str
+
+class PayoutAccountCreate(BaseModel):
+    type: str     # 'bank' or 'crypto'
+    label: str    # 'Chase Bank' or 'BTC Wallet'
+    details: str  # Account number or Crypto address
