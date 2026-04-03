@@ -36,11 +36,15 @@ if "?sslmode=" in DATABASE_URL:
     
     connect_args["ssl"] = ssl_context
 
-# 4. Create the Async Engine
+# 4. 🚨 THE FIX: Create the Async Engine with Pool Pre-Ping
 engine = create_async_engine(
     DATABASE_URL,
     echo=False, 
-    connect_args=connect_args # Pass the fixed SSL context here!
+    connect_args=connect_args, # Keeps your custom Neon SSL context
+    pool_pre_ping=True,        # Tests connections before using them to prevent 500 errors
+    pool_recycle=1800,         # Automatically recycles connections older than 30 mins
+    pool_size=10,              # Keeps a healthy limit on concurrent connections
+    max_overflow=20            # Allows temporary spikes in traffic
 )
 
 # 5. Create the Session Maker
