@@ -2,18 +2,17 @@ import os
 import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
-# 🚨 THE FIX: Import ALL models here so SQLAlchemy knows to create their tables
+# 🚨 Database & Models
 from app.db.session import engine
 from app.domains.users.models import Base, User, SiteSettings
 from app.domains.wallet.models import Wallet, PaymentMethod
 from app.domains.chat.models import ChatMessage, SupportTicket
 
-# ---> IMPORT ALL ROUTERS HERE <---
+# ---> ROUTERS <---
 from app.domains.users.auth import router as auth_router
-from app.domains.users.router import router as users_router # <--- Your new settings/KYC router
+from app.domains.users.router import router as users_router
 from app.domains.admin.router import router as admin_router
 from app.domains.wallet.router import router as wallet_router
 from app.domains.trade.router import router as trade_router 
@@ -32,32 +31,37 @@ sentry_sdk.init(
     profiles_sample_rate=0.1,
 )
 
-# 2. Asynchronous Lifespan Management (Auto-Creates Missing Tables!)
+# 2. Asynchronous Lifespan Management (Optimized for Cloud Boot)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("System Booting: Initializing secure connections...")
-    
-    # 🚨 REMOVED: Base.metadata.create_all
-    # Schema generation is removed to prevent Render boot timeouts.
-    # Tables are already synced in the Neon vault.
-    
+    # Schema generation bypassed to prevent Render boot timeouts.
+    # Tables managed via Neon DB & Alembic migrations.
     yield
     print("System Shutting Down: Closing database pools...")
 
 # 3. FastAPI Initialization
 app = FastAPI(
-    title="Core Financial Engine",
+    title="Dunex Core Financial Engine",
     description="Async API handling ledgers, trading execution, and real-time chat.",
     version="1.0.0",
     lifespan=lifespan
 )
 
-# 4. Security: CORS Middleware
+# 4. Security: CORS Middleware (Production Hardened)
+# 🚨 Add your actual live domains here once you deploy the frontend!
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",        # Next.js Local
+    "http://localhost:8081",        # Expo Local Web
+    "https://admin.dunexmarkets.com", # Future Live Admin
+    "https://app.dunexmarkets.com"    # Future Live Web App
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=ALLOWED_ORIGINS, 
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -71,12 +75,10 @@ async def health_check():
 
 # 6. Router Inclusions
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["Authentication"])
-app.include_router(users_router, prefix="/api/v1") # Includes the new /users endpoints
+app.include_router(users_router, prefix="/api/v1") 
 app.include_router(admin_router, prefix="/api/v1")
 app.include_router(wallet_router, prefix="/api/v1/wallet") 
 app.include_router(trade_router, prefix="/api/v1") 
 app.include_router(chat_router, prefix="/api/v1")
 
-# 7. Static Files Mount (Required for image uploads)
-os.makedirs("static/uploads", exist_ok=True)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# 🚨 Removed the local static file mounting! Cloudinary handles all media now.
