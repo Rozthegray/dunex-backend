@@ -27,7 +27,9 @@ class Wallet(Base):
     referral_balance = Column(Float, default=0.0) 
     
     owner = relationship("User", back_populates="wallets")
-    transactions = relationship("LedgerTransaction", back_populates="wallet")
+    
+    # 🚨 ADDED CASCADE HERE
+    transactions = relationship("LedgerTransaction", back_populates="wallet", cascade="all, delete-orphan")
 
 class LedgerTransaction(Base):
     __tablename__ = "ledger_transactions"
