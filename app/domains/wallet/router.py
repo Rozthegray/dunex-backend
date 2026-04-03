@@ -1,5 +1,6 @@
 import uuid
 import os
+import httpx
 from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, File, UploadFile, Form
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,31 @@ from app.core.idempotency import IdempotentRoute
 from app.domains.users.models import User
 from app.domains.wallet.models import Wallet, PaymentMethod, LedgerTransaction
 from app.domains.wallet import schemas, services
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cloudinary Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+CLOUDINARY_CLOUD_NAME = "dkpicfvgv"
+CLOUDINARY_UPLOAD_PRESET = "vidstream"
+
+async def upload_to_cloudinary(file_bytes: bytes, filename: str) -> str:
+    """Streams a file directly to Cloudinary and returns the permanent secure URL."""
+    url = f"https://api.cloudinary.com/v1_1/{CLOUDINARY_CLOUD_NAME}/image/upload"
+    
+    data = {"upload_preset": CLOUDINARY_UPLOAD_PRESET}
+    files = {"file": (filename, file_bytes, "image/jpeg")}
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, data=data, files=files)
+        if response.status_code == 200:
+            return response.json()["secure_url"]
+        else:
+            print(f"Cloudinary Error: {response.text}")
+            raise HTTPException(status_code=500, detail="Image storage service failed.")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Router Setup
+# ─────────────────────────────────────────────────────────────────────────────
 
 class AdminUserUpdate(BaseModel):
     first_name: str
@@ -26,9 +52,6 @@ class AdminUserUpdate(BaseModel):
     kyc_verified: bool
     email_verified: bool
     two_fa_enabled: bool
-
-UPLOAD_DIR = "static/uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 router = APIRouter(
     tags=["Wallet & Ledger"],
@@ -108,17 +131,16 @@ async def get_balance(current_user: User = Depends(get_current_user), db: AsyncS
         await db.commit()
         await db.refresh(wallet)
 
-    # 🚨 FIXED: Now uses main_balance
     return {"cached_balance": wallet.main_balance, "currency": wallet.currency, "wallet_id": str(wallet.id)}
 
 @router.post("/deposit")
 async def request_deposit(
     amount: float = Form(...),
     payment_method_id: str = Form(...),
-    proof_image: UploadFile = File(...), # 🚨 Frontend must use 'proof_image'
+    proof_image: UploadFile = File(...), 
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    idempotency_key: str = Header(None, alias="Idempotency-Key") # 🚨 Made optional so it doesn't break
+    idempotency_key: str = Header(None, alias="Idempotency-Key") 
 ):
     try:
         query = select(Wallet).where(Wallet.user_id == current_user.id).limit(1)
@@ -127,18 +149,10 @@ async def request_deposit(
         if not wallet:
             raise HTTPException(status_code=404, detail="Wallet not found.")
 
-        # 🚨 Safety Net: Create folder if it doesn't exist
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-        file_ext = proof_image.filename.split(".")[-1] if proof_image.filename else "jpg"
-        file_name = f"{uuid.uuid4().hex}.{file_ext}"
-        file_path = f"{UPLOAD_DIR}/{file_name}"
-        
+        # 🚨 Stream directly to Cloudinary
         image_data = await proof_image.read()
-        with open(file_path, "wb") as f:
-            f.write(image_data)
-            
-        proof_url = f"/{UPLOAD_DIR}/{file_name}"
+        proof_url = await upload_to_cloudinary(image_data, proof_image.filename)
+        
         reference = f"DEP-{uuid.uuid4().hex[:12].upper()}"
         
         await services.execute_deposit(db, wallet.id, amount, reference, uuid.UUID(payment_method_id), proof_url)
@@ -161,7 +175,7 @@ async def request_withdrawal(
     db: AsyncSession = Depends(get_db),
     idempotency_key: str = Header(..., alias="Idempotency-Key")
 ):
-    # 🚨 STRICT KYC GUARD: Server will reject if not verified
+    # STRICT KYC GUARD: Server will reject if not verified
     if current_user.kyc_status != "verified":
         raise HTTPException(
             status_code=403, 
@@ -190,7 +204,7 @@ async def request_withdrawal(
         status="pending", 
         reference=reference,
         amount=payload.amount,
-        new_balance=wallet.main_balance, # 🚨 FIXED
+        new_balance=wallet.main_balance, 
         message="Withdrawal request submitted and is pending review."
     )
 
