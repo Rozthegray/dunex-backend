@@ -31,12 +31,10 @@ sentry_sdk.init(
     profiles_sample_rate=0.1,
 )
 
-# 2. Asynchronous Lifespan Management (Optimized for Cloud Boot)
+# 2. Asynchronous Lifespan Management
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("System Booting: Initializing secure connections...")
-    # Schema generation bypassed to prevent Render boot timeouts.
-    # Tables managed via Neon DB & Alembic migrations.
     yield
     print("System Shutting Down: Closing database pools...")
 
@@ -48,20 +46,22 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# 4. Security: CORS Middleware (Production Hardened)
-# 🚨 Add your actual live domains here once you deploy the frontend!
+# 4. Security: CORS Middleware (Hardened for Production)
 ALLOWED_ORIGINS = [
-    "http://localhost:3000",        # Next.js Local
-    "http://localhost:8081",        # Expo Local Web
-    "https://admin.dunexmarkets.com", # Future Live Admin
-    "https://app.dunexmarkets.com"    # Future Live Web App
+    "http://localhost:3000",          # Next.js Local
+    "http://localhost:8081",          # Expo Local Web
+    "https://admin.dunexmarkets.com", 
+    "https://app.dunexmarkets.com",   
+    "https://www.dunexmarkets.com",   # Production with www
+    "https://dunexmarkets.com",       # Production root
+    "https://dunex-frontend.vercel.app", # Vercel fallback
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS, 
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["*"],              # 🚨 Changed to allow all to prevent preflight fails
     allow_headers=["*"],
 )
 
@@ -70,15 +70,14 @@ app.add_middleware(
 async def health_check():
     return {
         "status": "operational", 
-        "environment": os.getenv("ENVIRONMENT", "development")
+        "environment": os.getenv("ENVIRONMENT", "production")
     }
 
 # 6. Router Inclusions
+# Note: Ensure these prefixes match what your frontend calls!
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["Authentication"])
 app.include_router(users_router, prefix="/api/v1") 
 app.include_router(admin_router, prefix="/api/v1")
 app.include_router(wallet_router, prefix="/api/v1/wallet") 
 app.include_router(trade_router, prefix="/api/v1") 
 app.include_router(chat_router, prefix="/api/v1")
-
-# 🚨 Removed the local static file mounting! Cloudinary handles all media now.
