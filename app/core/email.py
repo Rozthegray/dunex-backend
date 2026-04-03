@@ -7,7 +7,7 @@ from email.mime.multipart import MIMEMultipart
 SMTP_SERVER = os.getenv("SMTP_SERVER", "live.smtp.mailtrap.io")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "api") # Hardcoded to 'api' based on Mailtrap specs
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "") # Put your Mailtrap API Token in Render!
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "6b9f657061b7a057dc0a94458e996164") # Put your Mailtrap API Token in Render!
 FROM_EMAIL = os.getenv("FROM_EMAIL", "Dunex Support <support@dunexmarkets.com>")
 
 def _send_email(to_email: str, subject: str, html_content: str, category: str):
