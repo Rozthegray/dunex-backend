@@ -4,13 +4,16 @@ Covers: profile update, password change, avatar, 2FA, push token, KYC,
         payment methods (card/bank/crypto), wallet management.
 """
 import uuid
+import httpx
 import random
+import os
 from datetime import timedelta
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func # 🚨 Added 'func' here
 from pydantic import BaseModel
+
 
 from app.db.session import get_db
 from app.core.security import get_current_user, verify_password, get_password_hash
@@ -20,6 +23,25 @@ from app.domains.wallet.models import Wallet, PaymentMethod
 
 router = APIRouter(prefix="/users", tags=["User Settings"])
 
+
+# 🚨 Your Cloudinary Credentials
+CLOUDINARY_CLOUD_NAME = "dkpicfvgv"
+CLOUDINARY_UPLOAD_PRESET = "vidstream"
+
+async def upload_to_cloudinary(file_bytes: bytes, filename: str) -> str:
+    """Streams a file directly to Cloudinary and returns the permanent secure URL."""
+    url = f"https://api.cloudinary.com/v1_1/{CLOUDINARY_CLOUD_NAME}/image/upload"
+    
+    data = {"upload_preset": CLOUDINARY_UPLOAD_PRESET}
+    files = {"file": (filename, file_bytes, "image/jpeg")}
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, data=data, files=files)
+        if response.status_code == 200:
+            return response.json()["secure_url"]
+        else:
+            print(f"Cloudinary Error: {response.text}")
+            raise HTTPException(status_code=500, detail="Image storage service failed.")
 
 # ---------------------------------------------------------------------------
 # Profile
@@ -162,20 +184,6 @@ async def save_push_token(
 # KYC
 # ---------------------------------------------------------------------------
 
-@router.post("/kyc")
-async def submit_kyc(
-    id_front: UploadFile = File(...),
-    id_back: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Accept KYC documents and queue for admin review."""
-    # Production: upload to S3, store URLs, trigger admin notification
-    current_user.kyc_status = "pending"
-    await db.commit()
-    return {"status": "ok", "kyc_status": "pending", "message": "Documents submitted. Review takes 1-2 business days."}
-
-
 @router.get("/kyc/status")
 async def get_kyc_status(current_user: User = Depends(get_current_user)):
     return {"kyc_status": current_user.kyc_status}
@@ -198,8 +206,7 @@ async def list_payment_methods(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-
-query = select(PaymentMethod).where(PaymentMethod.is_active == True)  
+        select(PaymentMethod).where(PaymentMethod.user_id == current_user.id)
     )
     methods = result.scalars().all()
     return [
@@ -283,37 +290,252 @@ async def get_wallets(
         for w in wallets
     ]
 
-from fastapi import Form
 
 # ---------------------------------------------------------------------------
-# KYC
+# KYC Onboarding
 # ---------------------------------------------------------------------------
+from fastapi import Form, UploadFile, File
 
+## ---------------------------------------------------------------------------
+# Profile Avatar Upload
+# ---------------------------------------------------------------------------
+@router.post("/avatar")
+async def upload_avatar(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Uploads profile avatar directly to Cloudinary."""
+    if file.content_type not in ("image/jpeg", "image/png", "image/webp"):
+        raise HTTPException(status_code=400, detail="Only JPEG/PNG/WebP images are accepted.")
+
+    # Read the file bytes
+    file_bytes = await file.read()
+    
+    # 🚨 Send to Cloudinary!
+    secure_url = await upload_to_cloudinary(file_bytes, file.filename)
+    
+    current_user.avatar_url = secure_url
+    await db.commit()
+    
+    return {"status": "success", "avatar_url": secure_url}
+
+
+# ---------------------------------------------------------------------------
+# KYC Onboarding
+# ---------------------------------------------------------------------------
 @router.post("/kyc")
 async def submit_kyc(
+    fullName: str = Form(...),
+    gender: str = Form(...),
     dob: str = Form(...),
-    ssn: str = Form(...),
+    phone: str = Form(...),
+    address: str = Form(...),
+    country: str = Form(...),
+    idNumber: str = Form(...),
+    email: str = Form(None),
     id_card: UploadFile = File(...),
     govt_id: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Accept full KYC details and documents."""
+    """Accepts full KYC details and streams documents to Cloudinary."""
     
-    # In production, you would upload these files to AWS S3 or Cloudinary here
-    # and save the returned URLs to the database. For now, we simulate the URLs.
-    simulated_id_url = f"https://dunex.com/secure/id_{current_user.id}.jpg"
-    simulated_govt_url = f"https://dunex.com/secure/govt_{current_user.id}.jpg"
+    # 1. Read incoming image bytes
+    id_bytes = await id_card.read()
+    govt_bytes = await govt_id.read()
 
+    # 🚨 2. Stream directly to Cloudinary
+    id_url = await upload_to_cloudinary(id_bytes, id_card.filename)
+    govt_url = await upload_to_cloudinary(govt_bytes, govt_id.filename)
+
+    # 3. Update the Database with the permanent URLs
+    current_user.full_name = fullName
+    current_user.gender = gender
     current_user.dob = dob
-    current_user.ssn = ssn
-    current_user.id_card_url = simulated_id_url
-    current_user.govt_id_url = simulated_govt_url
+    current_user.phone = phone
+    current_user.address = address
+    current_user.country = country
+    current_user.id_number = idNumber
+    
+    current_user.id_card_url = id_url
+    current_user.govt_id_url = govt_url
     current_user.kyc_status = "pending"
     
     await db.commit()
-    return {"status": "ok", "kyc_status": "pending", "message": "KYC submitted. Review takes 1-2 business days."}
+    
+    return {
+        "status": "success", 
+        "kyc_status": "pending", 
+        "message": "KYC submitted. Review takes 1-2 business days."
+    }
 
-@router.get("/kyc/status")
-async def get_kyc_status(current_user: User = Depends(get_current_user)):
-    return {"kyc_status": current_user.kyc_status}
+# ─────────────────────────────────────────────────────────────────────────────
+# Payout Accounts  (withdrawal destinations)
+# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Payout Accounts  (withdrawal destinations)
+# ─────────────────────────────────────────────────────────────────────────────
+from app.domains.users.models import UserPayoutAccount
+
+class PayoutAccountCreate(BaseModel):
+    type: str       # 'bank' | 'crypto'
+    label: str
+    details: str    # account number or wallet address
+
+@router.get("/payout-accounts")
+async def get_payout_accounts(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Fetches all saved withdrawal destinations for the user."""
+    query = select(UserPayoutAccount).where(UserPayoutAccount.user_id == current_user.id)
+    result = await db.execute(query)
+    return result.scalars().all()
+
+@router.post("/payout-accounts", status_code=201)
+async def add_payout_account(
+    payload: PayoutAccountCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Saves a new bank or crypto wallet for withdrawals (Max 5)."""
+    # 1. Basic validation
+    allowed_types = ("bank", "crypto")
+    if payload.type not in allowed_types:
+        raise HTTPException(status_code=400, detail=f"Type must be one of {allowed_types}")
+    if not payload.label.strip() or not payload.details.strip():
+        raise HTTPException(status_code=400, detail="Label and details are required.")
+
+    # 2. Cap at 5 saved routes per user to prevent database bloat
+    count_result = await db.execute(
+        select(func.count()).select_from(UserPayoutAccount)
+        .where(UserPayoutAccount.user_id == current_user.id)
+    )
+    if (count_result.scalar() or 0) >= 5:
+        raise HTTPException(status_code=400, detail="Maximum of 5 payout accounts allowed.")
+
+    # 3. Save the new route
+    account = UserPayoutAccount(
+        user_id=current_user.id,
+        type=payload.type,
+        label=payload.label.strip(),
+        details=payload.details.strip(),
+    )
+    db.add(account)
+    await db.commit()
+    await db.refresh(account)
+
+    return {"status": "success", "id": str(account.id), "message": "Payout route secured."}
+
+@router.delete("/payout-accounts/{account_id}", status_code=200)
+async def delete_payout_account(
+    account_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Removes a saved withdrawal destination."""
+    try:
+        valid_uuid = uuid.UUID(account_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid account ID.")
+
+    result = await db.execute(
+        select(UserPayoutAccount).where(
+            UserPayoutAccount.id == valid_uuid,
+            UserPayoutAccount.user_id == current_user.id,   # Ownership guard
+        )
+    )
+    account = result.scalar_one_or_none()
+    
+    if not account:
+        raise HTTPException(status_code=404, detail="Payout account not found.")
+
+    await db.delete(account)
+    await db.commit()
+    return {"status": "success", "message": "Payout route removed."}
+
+@router.delete("/payout-accounts/{account_id}")
+async def delete_payout_account(
+    account_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Removes a saved withdrawal destination."""
+    try:
+        valid_uuid = uuid.UUID(account_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid account ID format.")
+
+    query = select(UserPayoutAccount).where(
+        UserPayoutAccount.id == valid_uuid, 
+        UserPayoutAccount.user_id == current_user.id
+    )
+    result = await db.execute(query)
+    account = result.scalar_one_or_none()
+
+    if not account:
+        raise HTTPException(status_code=404, detail="Payout route not found.")
+
+    await db.delete(account)
+    await db.commit()
+    return {"status": "success", "message": "Payout route removed."}
+
+@router.post("/payout-accounts", status_code=201)
+async def add_payout_account(
+    payload: PayoutAccountCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # Basic validation
+    allowed_types = ("bank", "crypto")
+    if payload.type not in allowed_types:
+        raise HTTPException(status_code=400, detail=f"type must be one of {allowed_types}")
+    if not payload.label.strip() or not payload.details.strip():
+        raise HTTPException(status_code=400, detail="label and details are required.")
+
+    # Cap at 5 saved routes per user to prevent abuse
+    count_result = await db.execute(
+        select(func.count()).select_from(UserPayoutAccount)
+        .where(UserPayoutAccount.user_id == current_user.id)
+    )
+    if (count_result.scalar() or 0) >= 5:
+        raise HTTPException(status_code=400, detail="Maximum of 5 payout accounts allowed.")
+
+    account = UserPayoutAccount(
+        user_id=current_user.id,
+        type=payload.type,
+        label=payload.label.strip(),
+        details=payload.details.strip(),
+    )
+    db.add(account)
+    await db.commit()
+    await db.refresh(account)
+
+    return {"status": "ok", "id": str(account.id)}
+
+
+@router.delete("/payout-accounts/{account_id}", status_code=200)
+async def delete_payout_account(
+    account_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        valid_uuid = uuid.UUID(account_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid account ID.")
+
+    result = await db.execute(
+        select(UserPayoutAccount).where(
+            UserPayoutAccount.id == valid_uuid,
+            UserPayoutAccount.user_id == current_user.id,   # ownership guard
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Payout account not found.")
+
+    await db.delete(account)
+    await db.commit()
+    return {"status": "ok"}
