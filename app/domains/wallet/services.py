@@ -4,14 +4,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException, status
 from app.domains.wallet.models import Wallet, LedgerTransaction
 
-
 async def execute_deposit(
     db: AsyncSession, 
     wallet_id: uuid.UUID, 
     amount: float, 
     reference: str,
-    payment_method: str = None,
-    receipt_url: str = None
+    payment_method_id: str = None,
+    proof_image_url: str = None
 ):
     """
     Registers a deposit request. Funds are held in a pending state 
@@ -31,17 +30,18 @@ async def execute_deposit(
     # 2. Create the immutable ledger record (Credit)
     transaction = LedgerTransaction(
         wallet_id=wallet_id,
-        amount=amount,  # Positive amount for deposits
+        amount=amount, 
         transaction_type="deposit",
-        status="pending",  # Strict pending lock
+        wallet_type="main", 
+        status="pending",  
         reference=reference,
-        # Uncomment these if you added them to your LedgerTransaction model
-        # payment_method=payment_method,
-        # receipt_url=receipt_url
+        # 🚨 THE FIX: Map the URL straight to the actual database column!
+        proof_url=proof_image_url, 
+        destination_details=f"Method ID: {payment_method_id}" if payment_method_id else None
     )
     db.add(transaction)
 
-    # 3. Commit the transaction block (Balance remains unchanged until admin approval)
+    # 3. Commit the transaction block
     await db.commit()
     await db.refresh(transaction)
     
@@ -52,7 +52,7 @@ async def execute_withdrawal(
     wallet_id: uuid.UUID, 
     amount: float, 
     reference: str,
-    destination_details: str = None # 🚨 1. NEW: Accept the destination details
+    destination_details: str = None 
 ):
     """
     Executes a withdrawal with a strict row-level lock to prevent race conditions.
@@ -68,25 +68,29 @@ async def execute_withdrawal(
     if not wallet:
         raise HTTPException(status_code=404, detail="Wallet not found.")
 
-    if wallet.cached_balance < amount:
+    # 🚨 FIX: Now checks against 'main_balance' instead of the deleted 'cached_balance'
+    if wallet.main_balance < amount:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
-            detail="Insufficient funds."
+            detail="Insufficient funds in Main Balance."
         )
 
-    # 2. Create the immutable ledger record (Debit)
+
+# 2. Create the immutable ledger record (Debit)
     transaction = LedgerTransaction(
         wallet_id=wallet_id,
         amount=-amount, 
         transaction_type="withdrawal",
+        wallet_type="main", 
         status="pending", 
         reference=reference,
-        destination_details=destination_details # 🚨 2. NEW: Save it to the database!
+        destination_details=destination_details 
+        # Make sure there is NO proof_url line here at all!
     )
     db.add(transaction)
-
-    # 3. Deduct immediately to prevent double-spending while pending
-    wallet.cached_balance -= amount
+    
+    # 🚨 FIX: Deduct from 'main_balance' immediately to prevent double-spending
+    wallet.main_balance -= amount
 
     # 4. Commit the transaction block
     await db.commit()
