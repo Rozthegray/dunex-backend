@@ -1,25 +1,26 @@
 """
 Dunex Markets — Admin Router
-Full platform control: site settings, user management, KYC review, suspend/reactivate.
+Full platform control: site settings, user management, KYC review, balances, and order processing.
 All endpoints require role == 'admin' or 'superadmin'.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, func
+from sqlalchemy import select, func
+from sqlalchemy.orm import joinedload
 from pydantic import BaseModel
 from typing import Optional
 import uuid
 
-from app.domains.chat.models import ChatMessage, SupportTicket
 from app.db.session import get_db
 from app.core.security import get_current_user
 from app.domains.users.models import User, SiteSettings
 from app.domains.wallet.models import Wallet, LedgerTransaction, PaymentMethod
+
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
 # ---------------------------------------------------------------------------
-# Admin guard
+# Admin Guard
 # ---------------------------------------------------------------------------
 
 async def require_admin(current_user: User = Depends(get_current_user)):
@@ -40,7 +41,6 @@ async def get_site_settings(
     result = await db.execute(select(SiteSettings))
     settings = result.scalar_one_or_none()
     if not settings:
-        # Auto-create default row
         settings = SiteSettings()
         db.add(settings)
         await db.commit()
@@ -69,7 +69,6 @@ class SiteSettingsUpdate(BaseModel):
     min_withdrawal_usd: Optional[str] = None
     max_withdrawal_usd: Optional[str] = None
 
-
 @router.patch("/settings")
 async def update_site_settings(
     payload: SiteSettingsUpdate,
@@ -90,7 +89,6 @@ async def update_site_settings(
     return {"status": "ok", "updated": list(updates.keys())}
 
 
-# Public endpoint — mobile app reads this to know feature flags
 @router.get("/settings/public")
 async def get_public_settings(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(SiteSettings))
@@ -109,7 +107,7 @@ async def get_public_settings(db: AsyncSession = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
-# User management
+# User Management & Identity Matrix
 # ---------------------------------------------------------------------------
 
 @router.get("/users")
@@ -119,14 +117,12 @@ async def list_users(
     kyc_status: Optional[str] = None,
     role: Optional[str] = None,
     search: Optional[str] = None,
-    is_active: Optional[bool] = None, # Added to support the sidebar links!
+    is_active: Optional[bool] = None,
     _admin=Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    # 1. Build the base query
     q = select(User)
     
-    # 2. Apply all filters
     if kyc_status:
         q = q.where(User.kyc_status == kyc_status)
     if role:
@@ -136,15 +132,11 @@ async def list_users(
     if search:
         q = q.where(User.email.ilike(f"%{search}%") | User.full_name.ilike(f"%{search}%"))
         
-    # 3. Count the total records matching these specific filters
     count_query = select(func.count()).select_from(q.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    # 4. Apply Ordering FIRST, then Offset/Limit (CRITICAL SQL FIX)
     q = q.order_by(User.created_at.desc()).offset((page - 1) * limit).limit(limit)
-    
-    result = await db.execute(q)
-    users = result.scalars().all()
+    users = (await db.execute(q)).scalars().all()
 
     return {
         "total": total,
@@ -158,8 +150,7 @@ async def list_users(
                 "role": u.role,
                 "kyc_status": u.kyc_status,
                 "is_active": u.is_active,
-                "created_at": u.created_at.isoformat(),
-                # Removed last_login_at to prevent server crashes
+                "created_at": u.created_at.isoformat() if u.created_at else None,
             }
             for u in users
         ],
@@ -168,139 +159,141 @@ async def list_users(
 
 @router.get("/users/{user_id}")
 async def get_user_detail(user_id: str, db: AsyncSession = Depends(get_db)):
-    # 🛑 THE FIX: Safely check if the ID is a valid UUID first!
     try:
         valid_uuid = uuid.UUID(user_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID format. Must be a valid UUID.")
+        raise HTTPException(status_code=400, detail="Invalid user ID format.")
         
-    result = await db.execute(select(User).where(User.id == valid_uuid))
-    user = result.scalar_one_or_none()
+    # Join the referrer to display in the Identity Matrix
+    query = select(User).where(User.id == valid_uuid).options(joinedload(User.referred_by))
+    user = (await db.execute(query)).scalar_one_or_none()
     
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
         
-    return user
+    wallet_query = select(Wallet).where(Wallet.user_id == valid_uuid).limit(1)
+    wallet = (await db.execute(wallet_query)).scalar_one_or_none()
 
+    balances = {
+        "main": wallet.main_balance if wallet else 0.0,
+        "profit": wallet.profit_balance if wallet else 0.0,
+        "bonus": wallet.bonus_balance if wallet else 0.0,
+        "referral": wallet.referral_balance if wallet else 0.0,
+    }
+    total_equity = sum(balances.values())
+
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": user.role,
+        "kyc_status": user.kyc_status,
+        "is_active": user.is_active,
+        "dob": getattr(user, 'dob', ''),
+        "gender": getattr(user, 'gender', ''),
+        "phone": getattr(user, 'phone', ''),
+        "address": getattr(user, 'address', ''),
+        "country": getattr(user, 'country', ''),
+        "id_number": getattr(user, 'id_number', getattr(user, 'ssn', '')),
+        "id_card_url": user.id_card_url,
+        "govt_id_url": user.govt_id_url,
+        "referral_code": getattr(user, 'referral_code', 'N/A'),
+        "referred_by_email": user.referred_by.email if user.referred_by else None,
+        "referred_by_code": user.referred_by.referral_code if user.referred_by else None,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "balances": balances,
+        "total_equity": total_equity
+    }
+
+
+class AdminUserUpdate(BaseModel):
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    dob: Optional[str] = None
+    gender: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    country: Optional[str] = None
+    idNumber: Optional[str] = None
+    referred_by_code: Optional[str] = None
+
+@router.patch("/users/{user_id}")
+async def update_user_profile(
+    user_id: str, 
+    payload: AdminUserUpdate, 
+    _admin=Depends(require_admin), 
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        valid_uuid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID format.")
+
+    user = (await db.execute(select(User).where(User.id == valid_uuid))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if payload.full_name is not None: user.full_name = payload.full_name
+    if payload.email is not None: user.email = payload.email
+    if payload.dob is not None: user.dob = payload.dob
+    if payload.gender is not None: user.gender = payload.gender
+    if payload.phone is not None: user.phone = payload.phone
+    if payload.address is not None: user.address = payload.address
+    if payload.country is not None: user.country = payload.country
+    if payload.idNumber is not None: 
+        user.id_number = payload.idNumber
+        user.ssn = payload.idNumber # Keep legacy sync
+
+    # Admin Manual Referral Override
+    if payload.referred_by_code:
+        code = payload.referred_by_code.strip().upper()
+        if code == getattr(user, 'referral_code', ''):
+            raise HTTPException(status_code=400, detail="User cannot refer themselves.")
+        referrer = (await db.execute(select(User).where(User.referral_code == code))).scalar_one_or_none()
+        if referrer:
+            user.referred_by_id = referrer.id
+        else:
+            raise HTTPException(status_code=404, detail="Referrer code not found.")
+    elif payload.referred_by_code == "":
+        user.referred_by_id = None
+
+    await db.commit()
+    return {"status": "success", "message": "Identity Matrix Updated"}
 
 
 @router.post("/users/{user_id}/suspend")
-async def suspend_user(
-    user_id: str,
-    _admin=Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
+async def suspend_user(user_id: str, _admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    user = (await db.execute(select(User).where(User.id == uuid.UUID(user_id)))).scalar_one_or_none()
+    if not user: raise HTTPException(status_code=404, detail="User not found.")
     user.is_active = False
     await db.commit()
-    return {"status": "suspended", "email": user.email}
-
+    return {"status": "suspended"}
 
 @router.post("/users/{user_id}/reactivate")
-async def reactivate_user(
-    user_id: str,
-    _admin=Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
+async def reactivate_user(user_id: str, _admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    user = (await db.execute(select(User).where(User.id == uuid.UUID(user_id)))).scalar_one_or_none()
+    if not user: raise HTTPException(status_code=404, detail="User not found.")
     user.is_active = True
     await db.commit()
-    return {"status": "reactivated", "email": user.email}
+    return {"status": "reactivated"}
 
-
-class RoleUpdate(BaseModel):
-    role: str  # 'user' | 'admin'
-
-
-@router.patch("/users/{user_id}/role")
-async def update_user_role(
-    user_id: str,
-    payload: RoleUpdate,
-    admin=Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    if admin.role != "superadmin":
-        raise HTTPException(status_code=403, detail="Only superadmin can change roles.")
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
-    user.role = payload.role
+@router.delete("/users/{user_id}")
+async def delete_user(user_id: str, _admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    user = (await db.execute(select(User).where(User.id == uuid.UUID(user_id)))).scalar_one_or_none()
+    if not user: raise HTTPException(status_code=404, detail="User not found.")
+    await db.delete(user)
     await db.commit()
-    return {"status": "ok", "role": user.role}
+    return {"status": "deleted"}
 
 
 # ---------------------------------------------------------------------------
-# KYC Review
-# ---------------------------------------------------------------------------
-
-class KYCDecision(BaseModel):
-    status: str   # 'verified' | 'rejected'
-    reason: Optional[str] = None
-
-
-@router.post("/users/{user_id}/kyc-review")
-async def review_kyc(
-    user_id: str,
-    payload: KYCDecision,
-    _admin=Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    if payload.status not in ("verified", "rejected"):
-        raise HTTPException(status_code=400, detail="Status must be 'verified' or 'rejected'.")
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
-    user.kyc_status = payload.status
-    await db.commit()
-
-    # Send push notification to user
-    if user.expo_push_token:
-        from app.core.notifications import send_push_to_user
-        msg = "Your KYC has been verified! You can now withdraw." if payload.status == "verified" else f"KYC rejected: {payload.reason or 'Please resubmit.'}"
-        await send_push_to_user(user.expo_push_token, "KYC Update", msg, db, user_id=user.id)
-
-    return {"status": "ok", "kyc_status": payload.status}
-
-
-# ---------------------------------------------------------------------------
-# Dashboard stats
-# ---------------------------------------------------------------------------
-
-@router.get("/stats")
-async def get_dashboard_stats(
-    _admin=Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    total_users = (await db.execute(select(func.count(User.id)))).scalar()
-    active_users = (await db.execute(select(func.count(User.id)).where(User.is_active == True))).scalar()
-    pending_kyc = (await db.execute(select(func.count(User.id)).where(User.kyc_status == "pending"))).scalar()
-    
-    # 🚨 Temporarily hardcode these to 0 until we build the Support system!
-    open_tickets = 0
-    unread_chats = 0
-
-    return {
-        "total_users": total_users,
-        "active_users": active_users,
-        "pending_kyc": pending_kyc,
-        "open_tickets": open_tickets,
-        "unread_chats": unread_chats,
-    }
-# ---------------------------------------------------------------------------
-# Balance & Liquidity Adjustments
+# Balance Adjustments (4-Balance Ledger)
 # ---------------------------------------------------------------------------
 
 class BalanceAdjustRequest(BaseModel):
     amount: float
     action: str  # 'add' or 'subtract'
+    wallet_type: str = "main"
 
 @router.post("/users/{user_id}/balance")
 async def adjust_user_balance(
@@ -309,76 +302,52 @@ async def adjust_user_balance(
     _admin=Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    if payload.amount <= 0:
-        raise HTTPException(status_code=400, detail="Amount must be greater than zero.")
-    if payload.action not in ("add", "subtract"):
-        raise HTTPException(status_code=400, detail="Action must be 'add' or 'subtract'.")
+    if payload.amount <= 0: raise HTTPException(status_code=400, detail="Amount must be > 0.")
+    if payload.action not in ("add", "subtract"): raise HTTPException(status_code=400, detail="Invalid action.")
+    if payload.wallet_type not in ("main", "profit", "bonus", "referral"): raise HTTPException(status_code=400, detail="Invalid wallet.")
 
-    # 1. Validate UUID
-    try:
-        valid_uuid = uuid.UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID format.")
+    user_uuid = uuid.UUID(user_id)
+    wallet = (await db.execute(select(Wallet).where(Wallet.user_id == user_uuid).limit(1))).scalar_one_or_none()
 
-    # 2. Get the User's Wallet
-    result = await db.execute(select(Wallet).where(Wallet.user_id == valid_uuid).limit(1))
-    wallet = result.scalar_one_or_none()
-
-    # If they somehow don't have a wallet, provision one instantly
     if not wallet:
-        wallet = Wallet(user_id=valid_uuid, currency="USD", cached_balance=0.0)
+        wallet = Wallet(user_id=user_uuid, currency="USD")
         db.add(wallet)
         await db.flush()
 
-    # 3. Adjust the Balance
-    if payload.action == "add":
-        wallet.cached_balance += payload.amount
-    elif payload.action == "subtract":
-        if wallet.cached_balance < payload.amount:
-            raise HTTPException(status_code=400, detail="Insufficient funds. Cannot subtract more than the current balance.")
-        wallet.cached_balance -= payload.amount
+    column_name = f"{payload.wallet_type}_balance"
+    current_balance = getattr(wallet, column_name)
 
-    # 4. Create a Ledger Transaction for History
+    if payload.action == "add":
+        new_balance = current_balance + payload.amount
+        tx_type = "deposit"
+    elif payload.action == "subtract":
+        if current_balance < payload.amount:
+            raise HTTPException(status_code=400, detail=f"Insufficient funds in {payload.wallet_type}.")
+        new_balance = current_balance - payload.amount
+        tx_type = "withdrawal"
+
+    setattr(wallet, column_name, new_balance)
+
     tx = LedgerTransaction(
         wallet_id=wallet.id,
         amount=payload.amount,
-        transaction_type="deposit" if payload.action == "add" else "withdrawal",
-        status="completed", # Admin overrides are instantly marked as completed
+        transaction_type=tx_type,
+        wallet_type=payload.wallet_type,
+        status="completed", 
         reference=f"ADM-{uuid.uuid4().hex[:8].upper()}"
     )
     db.add(tx)
-
     await db.commit()
 
-    return {
-        "status": "success",
-        "message": f"Successfully {'added' if payload.action == 'add' else 'subtracted'} ${payload.amount:,.2f}.",
-        "new_balance": wallet.cached_balance
-    }
+    return {"status": "success", "new_balance": new_balance}
 
 @router.get("/users/{user_id}/transactions")
-async def get_user_transactions(
-    user_id: str,
-    _admin=Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    """Fetches all ledger history for a specific user to display in the Admin Dashboard."""
-    try:
-        valid_uuid = uuid.UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID format.")
+async def get_user_transactions(user_id: str, _admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    wallet = (await db.execute(select(Wallet).where(Wallet.user_id == uuid.UUID(user_id)).limit(1))).scalar_one_or_none()
+    if not wallet: return []
 
-    # Find the wallet first
-    wallet = (await db.execute(select(Wallet).where(Wallet.user_id == valid_uuid).limit(1))).scalar_one_or_none()
-    
-    if not wallet:
-        return [] # No wallet = no transactions
-
-    # Fetch transactions linked to that wallet
     txs = (await db.execute(
-        select(LedgerTransaction)
-        .where(LedgerTransaction.wallet_id == wallet.id)
-        .order_by(LedgerTransaction.created_at.desc())
+        select(LedgerTransaction).where(LedgerTransaction.wallet_id == wallet.id).order_by(LedgerTransaction.created_at.desc())
     )).scalars().all()
 
     return [
@@ -389,37 +358,21 @@ async def get_user_transactions(
             "amount": float(t.amount),
             "status": t.status,
             "created_at": t.created_at.isoformat() if t.created_at else None
-        }
-        for t in txs
+        } for t in txs
     ]
 
-# ---------------------------------------------------------------------------
-# Order & Liquidity Clearinghouse
-# ---------------------------------------------------------------------------
 
-from sqlalchemy.orm import joinedload # 🚨 Make sure to import this at the top
+# ---------------------------------------------------------------------------
+# Order & Affiliate Clearinghouse
+# ---------------------------------------------------------------------------
 
 @router.get("/orders")
-async def get_orders(
-    status: Optional[str] = "pending",
-    _admin=Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    """Fetches Ledger Transactions and joins the User data for the Admin Dashboard."""
-    
-    # 🚨 CRITICAL FIX: joinedload tells the DB to fetch the Wallet AND the User (owner) attached to the transaction!
-    q = (
-        select(LedgerTransaction)
-        .options(joinedload(LedgerTransaction.wallet).joinedload(Wallet.owner))
-    )
-    
-    if status and status != "all":
-        q = q.where(LedgerTransaction.status == status)
-        
+async def get_orders(status: Optional[str] = "pending", _admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    q = select(LedgerTransaction).options(joinedload(LedgerTransaction.wallet).joinedload(Wallet.owner))
+    if status and status != "all": q = q.where(LedgerTransaction.status == status)
     q = q.order_by(LedgerTransaction.created_at.desc())
     
-    result = await db.execute(q)
-    orders = result.scalars().all()
+    orders = (await db.execute(q)).scalars().all()
 
     return [
         {
@@ -430,63 +383,64 @@ async def get_orders(
             "status": o.status,
             "reference": o.reference,
             "proof_url": o.proof_url,
-            "destination_details": o.destination_details, # 🚨 Now this will show up on the frontend!
+            "destination_details": o.destination_details,
             "created_at": o.created_at.isoformat() if o.created_at else None,
             "user": {
-                "full_name": o.wallet.owner.full_name if o.wallet.owner.full_name else "System Auto-Generated",
+                "full_name": o.wallet.owner.full_name if o.wallet.owner.full_name else "Unknown",
                 "email": o.wallet.owner.email,
                 "kyc_status": o.wallet.owner.kyc_status
             } if o.wallet and o.wallet.owner else None
-        }
-        for o in orders
+        } for o in orders
     ]
+
+
 @router.post("/orders/{order_id}/{action}")
-async def process_order(
-    order_id: str,
-    action: str, 
-    _admin=Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    """Safely approves or rejects a user deposit/withdrawal and balances the ledger."""
-    if action not in ["approve", "reject"]:
-        raise HTTPException(status_code=400, detail="Action must be 'approve' or 'reject'.")
+async def process_order(order_id: str, action: str, _admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Approves/rejects orders AND powers the Affiliate Referral Engine."""
+    if action not in ["approve", "reject"]: raise HTTPException(status_code=400, detail="Invalid action.")
 
-    try:
-        valid_uuid = uuid.UUID(order_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid order ID.")
+    tx = (await db.execute(select(LedgerTransaction).where(LedgerTransaction.id == uuid.UUID(order_id)))).scalar_one_or_none()
+    if not tx: raise HTTPException(status_code=404, detail="Order not found.")
+    if tx.status != "pending": raise HTTPException(status_code=400, detail=f"Order is already {tx.status}.")
 
-    # 1. Fetch the transaction
-    tx = (await db.execute(select(LedgerTransaction).where(LedgerTransaction.id == valid_uuid))).scalar_one_or_none()
-    if not tx:
-        raise HTTPException(status_code=404, detail="Order not found.")
-
-    if tx.status != "pending":
-        raise HTTPException(status_code=400, detail=f"Order has already been processed as {tx.status.upper()}.")
-
-    # 2. Fetch the target Wallet
     wallet = (await db.execute(select(Wallet).where(Wallet.id == tx.wallet_id))).scalar_one_or_none()
-    if not wallet:
-        raise HTTPException(status_code=404, detail="Associated wallet not found.")
+    user = (await db.execute(select(User).where(User.id == wallet.user_id))).scalar_one_or_none()
 
-    # 3. Execute Secure Ledger Math
     if action == "approve":
         tx.status = "completed"
-        # Only ADD funds if it is a deposit. (Withdrawals are already deducted when requested).
         if tx.transaction_type == "deposit":
-            wallet.cached_balance += tx.amount
+            wallet.main_balance += tx.amount
+            
+            # 🚨 AUTOMATED AFFILIATE COMMISSION ENGINE 🚨
+            if user and user.referred_by_id:
+                commission_amount = tx.amount * 0.10 # 10% Cut
+                
+                referrer_wallet = (await db.execute(select(Wallet).where(Wallet.user_id == user.referred_by_id).limit(1))).scalar_one_or_none()
+                if referrer_wallet:
+                    referrer_wallet.referral_balance += commission_amount
+                    
+                    comm_tx = LedgerTransaction(
+                        wallet_id=referrer_wallet.id,
+                        amount=commission_amount,
+                        transaction_type="deposit",
+                        wallet_type="referral",
+                        status="completed",
+                        reference=f"COMM-{uuid.uuid4().hex[:8].upper()}",
+                        destination_details=f"10% Affiliate Commission from deposit by {user.email}"
+                    )
+                    db.add(comm_tx)
             
     elif action == "reject":
         tx.status = "rejected"
-        # If we reject a withdrawal, we must REFUND the money back to the user's wallet.
         if tx.transaction_type == "withdrawal":
-            wallet.cached_balance += tx.amount
+            wallet.main_balance += tx.amount # Refund the requested withdrawal
 
     await db.commit()
-    
     return {"status": "success", "message": f"Order {action.upper()}D successfully."}
+
+
 # ---------------------------------------------------------------------------
-# Payment Gateways Management (CRUD)
+# Payment Gateways Management
 # ---------------------------------------------------------------------------
 
 class PaymentMethodCreateUpdate(BaseModel):
@@ -496,74 +450,73 @@ class PaymentMethodCreateUpdate(BaseModel):
     instructions: Optional[str] = None
 
 @router.get("/payment-methods")
-async def get_admin_payment_methods(
-    _admin=Depends(require_admin), 
-    db: AsyncSession = Depends(get_db)
-):
-    """Fetches all payment methods, including inactive ones, for admin management."""
-    # 🚨 CHANGED: Ordering by 'name' instead of 'created_at' to prevent the crash!
-    result = await db.execute(select(PaymentMethod).order_by(PaymentMethod.name))
-    return result.scalars().all()
+async def get_admin_payment_methods(_admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    return (await db.execute(select(PaymentMethod).order_by(PaymentMethod.name))).scalars().all()
 
 @router.post("/payment-methods")
-async def create_payment_method(
-    payload: PaymentMethodCreateUpdate, 
-    _admin=Depends(require_admin), 
-    db: AsyncSession = Depends(get_db)
-):
-    """Creates a new payment gateway."""
+async def create_payment_method(payload: PaymentMethodCreateUpdate, _admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
     new_method = PaymentMethod(**payload.dict())
     db.add(new_method)
     await db.commit()
     return {"status": "success", "id": str(new_method.id)}
 
 @router.put("/payment-methods/{method_id}")
-async def update_payment_method(
-    method_id: str, 
-    payload: PaymentMethodCreateUpdate, 
-    _admin=Depends(require_admin), 
-    db: AsyncSession = Depends(get_db)
-):
-    """Updates an existing payment gateway's details."""
+async def update_payment_method(method_id: str, payload: PaymentMethodCreateUpdate, _admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
     method = await db.get(PaymentMethod, uuid.UUID(method_id))
-    if not method:
-        raise HTTPException(status_code=404, detail="Payment method not found.")
+    if not method: raise HTTPException(status_code=404, detail="Not found.")
     
     method.name = payload.name
     method.method_type = payload.method_type
     method.account_details = payload.account_details
     method.instructions = payload.instructions
-    
     await db.commit()
     return {"status": "success"}
 
 @router.patch("/payment-methods/{method_id}")
-async def toggle_payment_method(
-    method_id: str, 
-    is_active: bool, 
-    _admin=Depends(require_admin), 
-    db: AsyncSession = Depends(get_db)
-):
-    """Activates or Deactivates a payment gateway instantly."""
+async def toggle_payment_method(method_id: str, is_active: bool, _admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
     method = await db.get(PaymentMethod, uuid.UUID(method_id))
-    if not method:
-        raise HTTPException(status_code=404, detail="Payment method not found.")
-    
+    if not method: raise HTTPException(status_code=404, detail="Not found.")
     method.is_active = is_active
     await db.commit()
-    return {"status": "success", "is_active": is_active}
+    return {"status": "success"}
 
 @router.delete("/payment-methods/{method_id}")
-async def delete_payment_method(
-    method_id: str, 
-    _admin=Depends(require_admin), 
-    db: AsyncSession = Depends(get_db)
-):
-    """Permanently deletes a payment gateway."""
+async def delete_payment_method(method_id: str, _admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
     method = await db.get(PaymentMethod, uuid.UUID(method_id))
-    if not method:
-        raise HTTPException(status_code=404, detail="Payment method not found.")
-    
+    if not method: raise HTTPException(status_code=404, detail="Not found.")
     await db.delete(method)
     await db.commit()
     return {"status": "success"}
+
+# ---------------------------------------------------------------------------
+# KYC Review & Stats
+# ---------------------------------------------------------------------------
+
+class KYCDecision(BaseModel):
+    status: str
+    reason: Optional[str] = None
+
+@router.post("/users/{user_id}/kyc-review")
+async def review_kyc(user_id: str, payload: KYCDecision, _admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    if payload.status not in ("verified", "rejected"): raise HTTPException(status_code=400, detail="Invalid status.")
+    
+    user = (await db.execute(select(User).where(User.id == uuid.UUID(user_id)))).scalar_one_or_none()
+    if not user: raise HTTPException(status_code=404, detail="User not found.")
+    
+    user.kyc_status = payload.status
+    await db.commit()
+    return {"status": "ok"}
+
+@router.get("/stats")
+async def get_dashboard_stats(_admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    total_users = (await db.execute(select(func.count(User.id)))).scalar()
+    active_users = (await db.execute(select(func.count(User.id)).where(User.is_active == True))).scalar()
+    pending_kyc = (await db.execute(select(func.count(User.id)).where(User.kyc_status == "pending"))).scalar()
+    
+    return {
+        "total_users": total_users,
+        "active_users": active_users,
+        "pending_kyc": pending_kyc,
+        "open_tickets": 0,
+        "unread_chats": 0,
+    }
