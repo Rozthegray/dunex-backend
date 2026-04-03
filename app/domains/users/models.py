@@ -58,14 +58,15 @@ class User(Base):
 
     # ---------------------------------------------------------
     # Relationships
-    # ---------------------------------------------------------
-    wallets = relationship("Wallet", back_populates="owner")
+# ---------------------------------------------------------
+    # 🚨 ADDED CASCADE HERE
+    wallets = relationship("Wallet", back_populates="owner", cascade="all, delete-orphan")
     
-    # 🚨 Self-referential relationship so a User can "own" other Users in the tree
+    # Self-referential relationship so a User can "own" other Users in the tree
     referred_by = relationship("User", remote_side=[id], backref="referrals")
 
-    # 🚨 THE FIX: Perfectly matches "owner" in UserPayoutAccount
-    payout_accounts = relationship("UserPayoutAccount", back_populates="owner") 
+    # 🚨 ADDED CASCADE HERE
+    payout_accounts = relationship("UserPayoutAccount", back_populates="owner", cascade="all, delete-orphan") 
 
 
 class UserPayoutAccount(Base):
@@ -78,5 +79,5 @@ class UserPayoutAccount(Base):
     details    = Column(String(255), nullable=False)  # account number or wallet address
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    # 🚨 Perfectly matches "payout_accounts" in User
+    # 🚨 REMOVED THE SNEAKY TRAILING COMMA HERE
     owner = relationship("User", back_populates="payout_accounts")
