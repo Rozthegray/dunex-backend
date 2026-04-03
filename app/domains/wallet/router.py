@@ -13,7 +13,6 @@ from app.domains.users.models import User
 from app.domains.wallet.models import Wallet, PaymentMethod, LedgerTransaction
 from app.domains.wallet import schemas, services
 
-# FIX 1: Indentation corrected and BaseModel/Optional explicitly imported
 class AdminUserUpdate(BaseModel):
     first_name: str
     last_name: str
@@ -28,7 +27,6 @@ class AdminUserUpdate(BaseModel):
     email_verified: bool
     two_fa_enabled: bool
 
-# Directory for storing payment proof screenshots
 UPLOAD_DIR = "static/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -43,16 +41,12 @@ async def get_active_payment_methods(
     current_user: User = Depends(get_current_user), 
     db: AsyncSession = Depends(get_db)
 ):
-    """Fetches all active payment methods created by the Admin for users to deposit to."""
     query = select(PaymentMethod).where(PaymentMethod.is_active == True)
     result = await db.execute(query)
-    methods = result.scalars().all()
-    
-    return methods
+    return result.scalars().all()
 
 @router.get("/history")
 async def get_transaction_history(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """Fetches the logged-in user's deposit and withdrawal history safely."""
     try:
         wallet_query = select(Wallet).where(Wallet.user_id == current_user.id).limit(1)
         wallet = (await db.execute(wallet_query)).scalar_one_or_none()
@@ -65,12 +59,7 @@ async def get_transaction_history(current_user: User = Depends(get_current_user)
         
         formatted_history = []
         for tx in transactions:
-            date_str = ""
-            if tx.created_at:
-                date_str = tx.created_at if isinstance(tx.created_at, str) else tx.created_at.isoformat()
-                
-            proof = getattr(tx, "proof_url", None)
-
+            date_str = tx.created_at if isinstance(tx.created_at, str) else tx.created_at.isoformat() if tx.created_at else ""
             formatted_history.append({
                 "id": str(tx.id),
                 "amount": float(tx.amount) if tx.amount else 0.0, 
@@ -78,27 +67,22 @@ async def get_transaction_history(current_user: User = Depends(get_current_user)
                 "status": tx.status,
                 "reference": tx.reference,
                 "created_at": date_str, 
-                "proof_url": proof
+                "proof_url": getattr(tx, "proof_url", None)
             })
             
         return formatted_history
-
     except Exception as e:
-        print(f"CRITICAL HISTORY ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     
 @router.patch("/users/{target_user_id}")
 async def update_user_profile(
     target_user_id: uuid.UUID,
     payload: AdminUserUpdate,
-    # FIX 2: Reverted to get_current_user to prevent crash, you can map your Admin check here later
     admin: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Updates a user's personal details and KYC verification statuses."""
     query = select(User).where(User.id == target_user_id)
-    result = await db.execute(query)
-    user = result.scalar_one_or_none()
+    user = (await db.execute(query)).scalar_one_or_none()
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -124,24 +108,27 @@ async def get_balance(current_user: User = Depends(get_current_user), db: AsyncS
         await db.commit()
         await db.refresh(wallet)
 
-    return {"cached_balance": wallet.cached_balance, "currency": wallet.currency, "wallet_id": str(wallet.id)}
+    # 🚨 FIXED: Now uses main_balance
+    return {"cached_balance": wallet.main_balance, "currency": wallet.currency, "wallet_id": str(wallet.id)}
 
 @router.post("/deposit")
 async def request_deposit(
     amount: float = Form(...),
     payment_method_id: str = Form(...),
-    proof_image: UploadFile = File(...),
+    proof_image: UploadFile = File(...), # 🚨 Frontend must use 'proof_image'
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    idempotency_key: str = Header(..., alias="Idempotency-Key")
+    idempotency_key: str = Header(None, alias="Idempotency-Key") # 🚨 Made optional so it doesn't break
 ):
     try:
         query = select(Wallet).where(Wallet.user_id == current_user.id).limit(1)
-        result = await db.execute(query)
-        wallet = result.scalar_one_or_none()
+        wallet = (await db.execute(query)).scalar_one_or_none()
         
         if not wallet:
             raise HTTPException(status_code=404, detail="Wallet not found.")
+
+        # 🚨 Safety Net: Create folder if it doesn't exist
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
 
         file_ext = proof_image.filename.split(".")[-1] if proof_image.filename else "jpg"
         file_name = f"{uuid.uuid4().hex}.{file_ext}"
@@ -151,8 +138,7 @@ async def request_deposit(
         with open(file_path, "wb") as f:
             f.write(image_data)
             
-        proof_url = f"/static/uploads/{file_name}"
-
+        proof_url = f"/{UPLOAD_DIR}/{file_name}"
         reference = f"DEP-{uuid.uuid4().hex[:12].upper()}"
         
         await services.execute_deposit(db, wallet.id, amount, reference, uuid.UUID(payment_method_id), proof_url)
@@ -162,11 +148,10 @@ async def request_deposit(
             "status": "pending",
             "reference": reference,
             "amount": amount,
-            "new_balance": wallet.cached_balance,
+            "new_balance": wallet.main_balance, 
             "message": "Proof uploaded! Deposit is pending review by an administrator."
         }
     except Exception as e:
-        print(f"CRITICAL DEPOSIT ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/withdraw", response_model=schemas.TransactionResponse)
@@ -176,22 +161,27 @@ async def request_withdrawal(
     db: AsyncSession = Depends(get_db),
     idempotency_key: str = Header(..., alias="Idempotency-Key")
 ):
+    # 🚨 STRICT KYC GUARD: Server will reject if not verified
+    if current_user.kyc_status != "verified":
+        raise HTTPException(
+            status_code=403, 
+            detail="KYC Verification Required. You must complete identity verification before withdrawing funds."
+        )
+
     query = select(Wallet).where(Wallet.user_id == current_user.id).limit(1)
-    result = await db.execute(query)
-    wallet = result.scalar_one_or_none()
+    wallet = (await db.execute(query)).scalar_one_or_none()
 
     if not wallet:
         raise HTTPException(status_code=404, detail="Wallet not found.")
 
     reference = f"WDW-{uuid.uuid4().hex[:12].upper()}"
 
-    # 🚨 Pass destination_details to your service
     await services.execute_withdrawal(
         db=db, 
         wallet_id=wallet.id, 
         amount=payload.amount, 
         reference=reference,
-        destination_details=payload.destination_details # 🚨 ADD THIS
+        destination_details=payload.destination_details 
     )
     
     await db.refresh(wallet)
@@ -200,6 +190,30 @@ async def request_withdrawal(
         status="pending", 
         reference=reference,
         amount=payload.amount,
-        new_balance=wallet.cached_balance,
+        new_balance=wallet.main_balance, # 🚨 FIXED
         message="Withdrawal request submitted and is pending review."
     )
+
+@router.get("/summary")
+async def get_wallet_summary(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Provides the 4-balance breakdown for the mobile app dashboard."""
+    query = select(Wallet).where(Wallet.user_id == current_user.id).limit(1)
+    wallet = (await db.execute(query)).scalar_one_or_none()
+
+    if not wallet:
+        wallet = Wallet(user_id=current_user.id, currency="USD")
+        db.add(wallet)
+        await db.commit()
+        await db.refresh(wallet)
+
+    total_equity = wallet.main_balance + wallet.profit_balance + wallet.bonus_balance + wallet.referral_balance
+
+    return {
+        "total_equity": total_equity,
+        "balances": {
+            "main": wallet.main_balance,
+            "profit": wallet.profit_balance,
+            "bonus": wallet.bonus_balance,
+            "referral": wallet.referral_balance
+        }
+    }
