@@ -87,6 +87,11 @@ async def get_transaction_history(current_user: User = Depends(get_current_user)
                 "id": str(tx.id),
                 "amount": float(tx.amount) if tx.amount else 0.0, 
                 "transaction_type": tx.transaction_type,
+                
+                # 🚨 THIS WAS MISSING! 
+                # Without this, the mobile app doesn't know it's a bonus/referral!
+                "wallet_type": tx.wallet_type, 
+                
                 "status": tx.status,
                 "reference": tx.reference,
                 "created_at": date_str, 
@@ -96,6 +101,7 @@ async def get_transaction_history(current_user: User = Depends(get_current_user)
         return formatted_history
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
     
 @router.patch("/users/{target_user_id}")
 async def update_user_profile(
