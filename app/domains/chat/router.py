@@ -506,19 +506,23 @@ async def get_online_users(current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Not authorized")
     return {"online_user_ids": manager.online_user_ids}
 
-
-# ─# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # 8. Support Ticketing, Broadcast & Email
 # ─────────────────────────────────────────────
 import os
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+# 🚨 Your Cloudinary Logo URL
+LOGO_URL = "https://res.cloudinary.com/dkpicfvgv/image/upload/icon_oo2lbm.png"
 
 # --- Mailtrap Email Helper Function ---
 def send_mailtrap_email(to_email: str, subject: str, body: str):
     """
     Sends an email using the Live Mailtrap SMTP server.
-    Credentials must be set in the Render Environment Variables.
+    Wraps all messages in a beautiful, branded HTML template.
     """
-    # 🚨 Pulls securely from Render. Defaults to Mailtrap Live.
     SMTP_SERVER = os.getenv("SMTP_SERVER", "live.smtp.mailtrap.io")
     SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
     SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
@@ -534,12 +538,29 @@ def send_mailtrap_email(to_email: str, subject: str, body: str):
     msg['To'] = to_email
     msg['Subject'] = subject
     
-    # Send as HTML to make it look professional, fallback to plain text if needed
-    msg.attach(MIMEText(body.replace('\n', '<br>'), 'html'))
+    # 🚨 Master HTML Wrapper (Injects the logo and styling around every email)
+    html_template = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #05050a; color: #ffffff; padding: 40px; border-radius: 12px; border: 1px solid #1f2937;">
+        
+        <div style="text-align: left; margin-bottom: 30px;">
+            <img src="{LOGO_URL}" alt="Dunex Markets" style="max-height: 40px; width: auto;" />
+        </div>
+
+        <div style="color: #d1d5db; line-height: 1.6; font-size: 16px;">
+            {body}
+        </div>
+        
+        <p style="color: #6b7280; font-size: 12px; margin-top: 40px; border-top: 1px solid #1f2937; padding-top: 20px;">
+            This is an automated message from Dunex Markets.
+        </p>
+    </div>
+    """
+
+    msg.attach(MIMEText(html_template, 'html'))
 
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls() # Encrypt the connection
+            server.starttls() 
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.send_message(msg)
         print(f"✅ Mailtrap transmission successful to {to_email}")
@@ -568,7 +589,7 @@ async def create_support_ticket(
     current_user: User = Depends(get_current_user), 
     db: AsyncSession = Depends(get_db)
 ):
-    # 1. Save to Database (Admin Panel can see it)
+    # 1. Save to Database
     ticket = SupportTicket(
         user_id=current_user.id,
         provided_name=payload.name or current_user.full_name,
@@ -581,19 +602,27 @@ async def create_support_ticket(
     db.add(ticket)
     await db.commit()
     
-    # 2. Alert the Admin (You)
-    admin_body = f"<strong>New Ticket from:</strong> {payload.name} ({payload.email})<br><br><strong>Issue:</strong><br>{payload.message}"
-    background_tasks.add_task(send_mailtrap_email, "rozthegrey@gmail.com", f"New Ticket: {payload.subject}", admin_body)
+    # 2. Alert the Admin
+    admin_body = f"<strong>New Message From:</strong> {payload.name} ({payload.email})<br><br><strong>Subject:</strong> {payload.subject}<br><br><strong>Message:</strong><br>{payload.message}"
+    background_tasks.add_task(send_mailtrap_email, "rozthegrey@gmail.com", f"New Support Message: {payload.subject}", admin_body)
     
-    # 3. Auto-Reply to the User
-    user_body = f"Hello {payload.name},<br><br>We received your ticket: <strong>'{payload.subject}'</strong>. Our 24/7 team will review it shortly.<br><br><strong>Your Message:</strong><br>{payload.message}"
-    background_tasks.add_task(send_mailtrap_email, payload.email or current_user.email, f"Support Received: {payload.subject}", user_body)
+    # 3. 🚨 Warm, Simple Auto-Reply to the User
+    user_body = f"""
+    <h3 style="color: #ffffff; font-size: 20px; margin-bottom: 15px;">We received your message!</h3>
+    Hello {payload.name},<br><br>
+    Thank you for reaching out to us. We have successfully received your message regarding <strong>"{payload.subject}"</strong>.<br><br>
+    Our support team is looking into it right now, and we will reply to you here via email very soon. You do not need to do anything else at this time.<br><br>
+    Warm regards,<br>
+    <strong>The Dunex Support Team</strong>
+    """
+    
+    # Friendly subject line
+    background_tasks.add_task(send_mailtrap_email, payload.email or current_user.email, "We received your message - Dunex Support", user_body)
     
     return {"status": "success"}
 
 @router.get("/admin/support/users")
 async def admin_get_users_for_dropdown(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """Fetches users for the Admin dropdown."""
     if current_user.role not in ["admin", "superadmin"]: raise HTTPException(status_code=403)
     users = (await db.execute(select(User.id, User.email, User.full_name))).all()
     return [{"id": str(u.id), "email": u.email, "name": u.full_name} for u in users]
@@ -612,16 +641,19 @@ async def admin_broadcast_message(
 ):
     if current_user.role not in ["admin", "superadmin"]: raise HTTPException(status_code=403)
 
+    # Convert newlines to HTML breaks so formatting looks right in the email
+    formatted_message = payload.message.replace('\n', '<br>')
+
     if payload.target_user_id == "all":
         users = (await db.execute(select(User.email).where(User.is_active == True))).scalars().all()
-        for email in set(users): # Use a set to prevent duplicate emails
-            background_tasks.add_task(send_mailtrap_email, email, payload.subject, payload.message)
+        for email in set(users):
+            background_tasks.add_task(send_mailtrap_email, email, payload.subject, formatted_message)
         return {"status": "success", "recipients": len(set(users))}
         
     elif payload.target_user_id == "custom":
         if not payload.custom_email:
             raise HTTPException(status_code=400, detail="Custom email is required")
-        background_tasks.add_task(send_mailtrap_email, payload.custom_email, payload.subject, payload.message)
+        background_tasks.add_task(send_mailtrap_email, payload.custom_email, payload.subject, formatted_message)
         return {"status": "success", "recipients": 1}
         
     else:
@@ -632,7 +664,7 @@ async def admin_broadcast_message(
             
         user = (await db.execute(select(User).where(User.id == user_uuid))).scalar_one_or_none()
         if user:
-            background_tasks.add_task(send_mailtrap_email, user.email, payload.subject, payload.message)
+            background_tasks.add_task(send_mailtrap_email, user.email, payload.subject, formatted_message)
             return {"status": "success", "recipients": 1}
             
         raise HTTPException(status_code=404, detail="User not found")
