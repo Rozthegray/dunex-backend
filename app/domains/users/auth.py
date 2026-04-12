@@ -173,7 +173,6 @@ async def recover_password(
 
 @router.post("/reset-password")
 async def reset_password(request: schemas.PasswordResetConfirm, db: AsyncSession = Depends(get_db)):
-    """Verifies the Redis code and updates the database hash."""
     stored_code = await redis_client.get(f"pwd_reset_{request.email}")
     
     if not stored_code or stored_code.decode("utf-8") != request.code:
@@ -186,8 +185,9 @@ async def reset_password(request: schemas.PasswordResetConfirm, db: AsyncSession
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
         
-    # 🚨 Updated here to pull from request.password
-    user.hashed_password = get_password_hash(request.password)
+    # 🚨 Swapped back to request.new_password
+    user.hashed_password = get_password_hash(request.new_password)
+    
     await db.commit()
     await redis_client.delete(f"pwd_reset_{request.email}")
     
