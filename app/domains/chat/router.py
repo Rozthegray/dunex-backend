@@ -597,21 +597,20 @@ async def admin_broadcast_message(
 ):
     if current_user.role not in ["admin", "superadmin"]: raise HTTPException(status_code=403)
 
-    # Convert newlines to HTML breaks so formatting looks right in the email
     formatted_message = payload.message.replace('\n', '<br>')
 
     if payload.target_user_id == "all":
         users = (await db.execute(select(User.email).where(User.is_active == True))).scalars().all()
         for email in set(users):
-            # 🚨 Dispatched via Zoho
-            background_tasks.add_task(_send_zoho_email, email, payload.subject, formatted_message, "Admin Broadcast")
+            # 🚨 Fixed: _send_api_email
+            background_tasks.add_task(_send_api_email, email, payload.subject, formatted_message, "Admin Broadcast") 
         return {"status": "success", "recipients": len(set(users))}
         
     elif payload.target_user_id == "custom":
         if not payload.custom_email:
             raise HTTPException(status_code=400, detail="Custom email is required")
-        # 🚨 Dispatched via Zoho
-        background_tasks.add_task(_send_zoho_email, payload.custom_email, payload.subject, formatted_message, "Admin Broadcast")
+        # 🚨 Fixed: _send_api_email
+        background_tasks.add_task(_send_api_email, payload.custom_email, payload.subject, formatted_message, "Admin Broadcast") 
         return {"status": "success", "recipients": 1}
         
     else:
@@ -622,8 +621,8 @@ async def admin_broadcast_message(
             
         user = (await db.execute(select(User).where(User.id == user_uuid))).scalar_one_or_none()
         if user:
-            # 🚨 Dispatched via Zoho
-            background_tasks.add_task(_send_zoho_email, user.email, payload.subject, formatted_message, "Admin Broadcast")
+            # 🚨 Fixed: _send_api_email (This was line 626!)
+            background_tasks.add_task(_send_api_email, user.email, payload.subject, formatted_message, "Admin Broadcast") 
             return {"status": "success", "recipients": 1}
             
         raise HTTPException(status_code=404, detail="User not found")
