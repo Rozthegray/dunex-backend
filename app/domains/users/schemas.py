@@ -29,7 +29,7 @@ class PasswordRecoveryRequest(BaseModel):
 class PasswordResetConfirm(BaseModel):
     email: str
     code: str
-    new_password: str
+    password: str  # 🚨 Updated here to perfectly match the frontend payload
 
 class PayoutAccountCreate(BaseModel):
     type: str     # 'bank' or 'crypto'
