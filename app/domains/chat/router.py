@@ -1,8 +1,6 @@
 import json
 import uuid
-import smtplib
-
-
+import os
 from datetime import datetime
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,12 +8,13 @@ from sqlalchemy import select, update, desc, func
 from typing import Dict, Optional, Set
 from pydantic import BaseModel
 
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-
 from app.db.session import get_db
 from app.core.security import get_current_user
-from app.core.notifications import notify_admin_new_chat, send_push_to_user
+from app.core.notifications import send_push_to_user
+
+# 🚨 Import our new centralized Zoho Email Engine
+from app.core.email import _send_zoho_email, send_admin_new_chat_alert
+
 from app.domains.users.models import User
 from app.domains.chat.models import ChatMessage, SupportTicket
 
@@ -174,11 +173,12 @@ async def websocket_user_endpoint(websocket: WebSocket, user_id: str):
                             "user_name": (user_row.full_name or user_row.email) if user_row else "Unknown",
                         })
 
+                        # 🚨 ZOHO TRIGGER: Notify admin if it's the first message in this session
                         if user_row and manager.should_notify_admin(user_id):
                             try:
-                                await notify_admin_new_chat(user_row.email, content, db)
+                                send_admin_new_chat_alert(user_row.email, content)
                             except Exception as e:
-                                print(f"[WS] Email notify failed: {e}")
+                                print(f"[WS] Zoho Email notify failed: {e}")
 
                     except Exception as e:
                         print(f"[WS DB Error] {e}")
@@ -369,7 +369,6 @@ class AdminReplyRequest(BaseModel):
     user_id: str
     content: str
 
-
 @router.post("/admin-reply")
 async def admin_reply(
     payload: AdminReplyRequest,
@@ -506,66 +505,10 @@ async def get_online_users(current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Not authorized")
     return {"online_user_ids": manager.online_user_ids}
 
+
 # ─────────────────────────────────────────────
-# 8. Support Ticketing, Broadcast & Email
+# 8. Support Ticketing, Broadcast & Zoho Email
 # ─────────────────────────────────────────────
-import os
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-
-# 🚨 Your Cloudinary Logo URL
-LOGO_URL = "https://res.cloudinary.com/dkpicfvgv/image/upload/icon_oo2lbm.png"
-
-# --- Mailtrap Email Helper Function ---
-def send_mailtrap_email(to_email: str, subject: str, body: str):
-    """
-    Sends an email using the Live Mailtrap SMTP server.
-    Wraps all messages in a beautiful, branded HTML template.
-    """
-    SMTP_SERVER = os.getenv("SMTP_SERVER", "live.smtp.mailtrap.io")
-    SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-    SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
-    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-    FROM_EMAIL = os.getenv("FROM_EMAIL", "Dunex Support <support@dunexmarkets.com>")
-
-    if not SMTP_USERNAME or not SMTP_PASSWORD:
-        print(f"[WARNING] Email skipped for {to_email}. SMTP credentials missing.")
-        return
-
-    msg = MIMEMultipart()
-    msg['From'] = FROM_EMAIL
-    msg['To'] = to_email
-    msg['Subject'] = subject
-    
-    # 🚨 Master HTML Wrapper (Injects the logo and styling around every email)
-    html_template = f"""
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #05050a; color: #ffffff; padding: 40px; border-radius: 12px; border: 1px solid #1f2937;">
-        
-        <div style="text-align: left; margin-bottom: 30px;">
-            <img src="{LOGO_URL}" alt="Dunex Markets" style="max-height: 40px; width: auto;" />
-        </div>
-
-        <div style="color: #d1d5db; line-height: 1.6; font-size: 16px;">
-            {body}
-        </div>
-        
-        <p style="color: #6b7280; font-size: 12px; margin-top: 40px; border-top: 1px solid #1f2937; padding-top: 20px;">
-            This is an automated message from Dunex Markets.
-        </p>
-    </div>
-    """
-
-    msg.attach(MIMEText(html_template, 'html'))
-
-    try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls() 
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.send_message(msg)
-        print(f"✅ Mailtrap transmission successful to {to_email}")
-    except Exception as e:
-        print(f"❌ Failed to send email via Mailtrap: {e}")
 
 # --- Schemas ---
 class TicketCreate(BaseModel):
@@ -602,11 +545,19 @@ async def create_support_ticket(
     db.add(ticket)
     await db.commit()
     
-    # 2. Alert the Admin
+    # 2. 🚨 Alert the Admin via Zoho (Runs securely in the background)
     admin_body = f"<strong>New Message From:</strong> {payload.name} ({payload.email})<br><br><strong>Subject:</strong> {payload.subject}<br><br><strong>Message:</strong><br>{payload.message}"
-    background_tasks.add_task(send_mailtrap_email, "rozthegrey@gmail.com", f"New Support Message: {payload.subject}", admin_body)
+    admin_alert_email = os.getenv("ADMIN_ALERT_EMAIL", "admin@dunexmarkets.com")
     
-    # 3. 🚨 Warm, Simple Auto-Reply to the User
+    background_tasks.add_task(
+        _send_zoho_email, 
+        admin_alert_email, 
+        f"New Support Message: {payload.subject}", 
+        admin_body, 
+        "Support Alert"
+    )
+    
+    # 3. 🚨 Warm, Simple Auto-Reply to the User via Zoho
     user_body = f"""
     <h3 style="color: #ffffff; font-size: 20px; margin-bottom: 15px;">We received your message!</h3>
     Hello {payload.name},<br><br>
@@ -616,8 +567,13 @@ async def create_support_ticket(
     <strong>The Dunex Support Team</strong>
     """
     
-    # Friendly subject line
-    background_tasks.add_task(send_mailtrap_email, payload.email or current_user.email, "We received your message - Dunex Support", user_body)
+    background_tasks.add_task(
+        _send_zoho_email, 
+        payload.email or current_user.email, 
+        "We received your message - Dunex Support", 
+        user_body, 
+        "Support Auto-Reply"
+    )
     
     return {"status": "success"}
 
@@ -647,13 +603,15 @@ async def admin_broadcast_message(
     if payload.target_user_id == "all":
         users = (await db.execute(select(User.email).where(User.is_active == True))).scalars().all()
         for email in set(users):
-            background_tasks.add_task(send_mailtrap_email, email, payload.subject, formatted_message)
+            # 🚨 Dispatched via Zoho
+            background_tasks.add_task(_send_zoho_email, email, payload.subject, formatted_message, "Admin Broadcast")
         return {"status": "success", "recipients": len(set(users))}
         
     elif payload.target_user_id == "custom":
         if not payload.custom_email:
             raise HTTPException(status_code=400, detail="Custom email is required")
-        background_tasks.add_task(send_mailtrap_email, payload.custom_email, payload.subject, formatted_message)
+        # 🚨 Dispatched via Zoho
+        background_tasks.add_task(_send_zoho_email, payload.custom_email, payload.subject, formatted_message, "Admin Broadcast")
         return {"status": "success", "recipients": 1}
         
     else:
@@ -664,7 +622,8 @@ async def admin_broadcast_message(
             
         user = (await db.execute(select(User).where(User.id == user_uuid))).scalar_one_or_none()
         if user:
-            background_tasks.add_task(send_mailtrap_email, user.email, payload.subject, formatted_message)
+            # 🚨 Dispatched via Zoho
+            background_tasks.add_task(_send_zoho_email, user.email, payload.subject, formatted_message, "Admin Broadcast")
             return {"status": "success", "recipients": 1}
             
         raise HTTPException(status_code=404, detail="User not found")
