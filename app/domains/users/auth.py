@@ -186,10 +186,9 @@ async def reset_password(request: schemas.PasswordResetConfirm, db: AsyncSession
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
         
-    user.hashed_password = get_password_hash(request.new_password)
+    # 🚨 Updated here to pull from request.password
+    user.hashed_password = get_password_hash(request.password)
     await db.commit()
     await redis_client.delete(f"pwd_reset_{request.email}")
     
     return {"status": "Password successfully reset."}
-
-
