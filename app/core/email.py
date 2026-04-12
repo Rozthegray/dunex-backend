@@ -5,7 +5,8 @@ from email.mime.multipart import MIMEMultipart
 
 # 🚨 Zoho Credentials from your .env
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.zoho.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+# 🚨 CRITICAL FIX: Defaulted to 465 to match the SMTP_SSL engine!
+SMTP_PORT = int(os.getenv("SMTP_PORT", 465)) 
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 FROM_EMAIL = os.getenv("FROM_EMAIL", "Dunex Support <support@dunexmarkets.com>")
