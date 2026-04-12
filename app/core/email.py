@@ -73,7 +73,7 @@ def send_onboarding_email(to_email: str, full_name: str):
 
 def send_password_reset_email(to_email: str, reset_code: str):
     # Note: Update the href URL below if your frontend reset route is different!
-    reset_link = "https://www.dunexmarkets.com/reset-password"
+    reset_link = "https://app.dunexmarkets.com/reset-password"
     
     body = f"""
     <h2 style="color: #D4AF37; margin-top: 0;">Vault Recovery Initiated</h2>
