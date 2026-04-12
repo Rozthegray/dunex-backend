@@ -42,8 +42,9 @@ def _send_zoho_email(to_email: str, subject: str, raw_body: str, category: str):
     msg.attach(MIMEText(html_template, 'html'))
 
     try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls() 
+        # 🚨 CRITICAL FIX: Use SMTP_SSL for Port 465 on Render
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
+            # Do NOT add server.starttls() here. Port 465 encrypts automatically.
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.send_message(msg)
         print(f"[ZOHO SMTP] {category} successfully sent to {to_email}")
