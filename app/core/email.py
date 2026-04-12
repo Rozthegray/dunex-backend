@@ -59,13 +59,41 @@ def _send_api_email(to_email: str, subject: str, raw_body: str, category: str):
 # ---------------------------------------------------------
 
 def send_onboarding_email(to_email: str, full_name: str):
-    body = f"Welcome to Dunex Markets, {full_name}. Please complete your KYC to unlock full trading capabilities."
-    _send_api_email(to_email, "Welcome to Dunex Markets", body, "Onboarding")
+    body = f"""
+    <h2 style="color: #D4AF37; margin-top: 0;">Welcome to Dunex Markets, {full_name}.</h2>
+    <p>Your secure trading vault has been successfully established. We are thrilled to have you join our platform.</p>
+    <p>To unlock your full portfolio capabilities—including  live trading, and withdrawals—please complete your brief identity verification (KYC) within your dashboard.</p>
+    <br>
+    <a href="https://www.dunexmarkets.com/dashboard" style="background-color: #D4AF37; color: #05050A; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Access Your Dashboard</a>
+    <br><br>
+    <p>If you need any assistance getting started, our support team is available 24/7 via the live chat in your account.</p>
+    <p>Best regards,<br><strong>The Dunex Markets Team</strong></p>
+    """
+    _send_api_email(to_email, "Dunex Markets: Vault Established & KYC Required", body, "Onboarding")
 
 def send_password_reset_email(to_email: str, reset_code: str):
-    body = f"Your password reset code is: <strong>{reset_code}</strong>. This code expires in 15 minutes."
-    _send_api_email(to_email, "Dunex Markets: Password Reset", body, "Password Reset")
-
+    # Note: Update the href URL below if your frontend reset route is different!
+    reset_link = "https://www.dunexmarkets.com/reset-password"
+    
+    body = f"""
+    <h2 style="color: #D4AF37; margin-top: 0;">Vault Recovery Initiated</h2>
+    <p>We received a request to reset the passphrase for your Dunex Markets account.</p>
+    
+    <p>Your secure 6-digit recovery code is:</p>
+    <div style="background-color: #1f2937; padding: 20px; border-radius: 8px; text-align: center; margin: 25px 0; border: 1px solid #374151;">
+        <span style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #D4AF37;">{reset_code}</span>
+    </div>
+    
+    <p>This code is valid for the next <strong>15 minutes</strong>.</p>
+    <br>
+    <a href="{reset_link}" style="background-color: #D4AF37; color: #05050A; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Enter Recovery Code</a>
+    <br><br>
+    <p style="font-size: 14px; color: #9ca3af; border-top: 1px solid #1f2937; padding-top: 20px; margin-top: 20px;">
+        <strong>Security Notice:</strong> If you did not request a password reset, please ignore this email or contact our support team immediately. Your vault remains fully secured.
+    </p>
+    """
+    
+    _send_api_email(to_email, "Dunex Markets: Vault Recovery Code", body, "Password Reset")
 def send_admin_broadcast_email(to_email: str, subject: str, message_body: str):
     _send_api_email(to_email, subject, message_body, "Admin Broadcast")
 
