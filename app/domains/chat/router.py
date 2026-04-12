@@ -13,7 +13,7 @@ from app.core.security import get_current_user
 from app.core.notifications import send_push_to_user
 
 # 🚨 Import our new centralized Zoho Email Engine
-from app.core.email import _send_zoho_email, send_admin_new_chat_alert
+from app.core.email import _send_api_email, send_admin_new_chat_alert
 
 from app.domains.users.models import User
 from app.domains.chat.models import ChatMessage, SupportTicket
