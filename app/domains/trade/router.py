@@ -10,7 +10,7 @@ from typing import Optional
 from app.db.session import get_db
 from app.core.security import get_current_user
 from app.domains.users.models import User
-from app.domains.wallet.models import Wallet, LedgerTransaction  # 🚨 INJECTED LEDGER
+from app.domains.wallet.models import Wallet, LedgerTransaction
 from app.domains.trade.models import SubWallet, TradeExecution
 
 router = APIRouter(
@@ -30,18 +30,10 @@ class ActiveTradeRequest(BaseModel):
     symbol: str
     amount_crypto: float  # Negative = wager deduction, Positive = payout
 
-# ─── Static fallback prices (used when both APIs fail) ────────────────────────
+# ─── Supported Assets ─────────────────────────────────────────────────────────
 
-FALLBACK_MARKET = [
-    {"symbol": "BTC",  "name": "Bitcoin",  "pair": "BTC/USD",  "current_price": 65430.50, "price_change_percent":  2.34, "high_24h": 66000.0, "low_24h": 64000.0, "volume": 1_200_500.0},
-    {"symbol": "ETH",  "name": "Ethereum", "pair": "ETH/USD",  "current_price":  3450.20, "price_change_percent": -1.20, "high_24h":  3500.0, "low_24h":  3400.0, "volume": 5_600_000.0},
-    {"symbol": "SOL",  "name": "Solana",   "pair": "SOL/USD",  "current_price":   145.75, "price_change_percent":  5.67, "high_24h":   150.0, "low_24h":   138.0, "volume":   25_000.0},
-    {"symbol": "BNB",  "name": "BNB",      "pair": "BNB/USD",  "current_price":   590.10, "price_change_percent":  0.45, "high_24h":   600.0, "low_24h":   585.0, "volume":    4_000.0},
-    {"symbol": "XRP",  "name": "XRP",      "pair": "XRP/USD",  "current_price":     0.58, "price_change_percent": -0.15, "high_24h":     0.60, "low_24h":     0.55, "volume":  150_000.0},
-    {"symbol": "ADA",  "name": "Cardano",  "pair": "ADA/USD",  "current_price":     0.45, "price_change_percent":  1.10, "high_24h":     0.47, "low_24h":     0.43, "volume":   30_000.0},
-    {"symbol": "DOGE", "name": "Dogecoin", "pair": "DOGE/USD", "current_price":     0.12, "price_change_percent": -0.90, "high_24h":     0.13, "low_24h":     0.11, "volume":   90_000.0},
-    {"symbol": "AVAX", "name": "Avalanche","pair": "AVAX/USD", "current_price":    35.20, "price_change_percent":  3.20, "high_24h":    36.00, "low_24h":    34.00, "volume":    5_500.0},
-]
+# Replaced static fallback prices with a definitive list of supported symbols
+SUPPORTED_SYMBOLS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX"]
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -52,6 +44,7 @@ def _cmc_headers() -> dict:
     return {"X-CMC_PRO_API_KEY": api_key, "Accept": "application/json"}
 
 async def _fetch_live_price(symbol: str) -> float:
+    # 1. Try CoinMarketCap First
     try:
         async with httpx.AsyncClient() as client:
             res = await client.get(
@@ -67,8 +60,12 @@ async def _fetch_live_price(symbol: str) -> float:
     except Exception:
         pass
 
+    # 2. Fallback to CoinCap (Free API)
     try:
-        slug_map = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "BNB": "binance-coin", "XRP": "xrp", "ADA": "cardano", "DOGE": "dogecoin", "AVAX": "avalanche", "DOT": "polkadot"}
+        slug_map = {
+            "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "BNB": "binance-coin", 
+            "XRP": "xrp", "ADA": "cardano", "DOGE": "dogecoin", "AVAX": "avalanche", "DOT": "polkadot"
+        }
         slug = slug_map.get(symbol, symbol.lower())
         async with httpx.AsyncClient() as client:
             res = await client.get(f"https://api.coincap.io/v2/assets/{slug}", timeout=3.0)
@@ -77,18 +74,19 @@ async def _fetch_live_price(symbol: str) -> float:
     except Exception:
         pass
 
-    fallback = next((c for c in FALLBACK_MARKET if c["symbol"] == symbol), None)
-    if fallback:
-        return fallback["current_price"]
-    raise HTTPException(status_code=400, detail=f"Price data unavailable for {symbol}.")
+    # 3. Fail safe (No static data allowed for execution)
+    raise HTTPException(status_code=503, detail=f"Live price data currently unavailable for {symbol}.")
 
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
 
 @router.get("/market")
 async def get_live_market_data():
+    symbols = ",".join(SUPPORTED_SYMBOLS)
+    market = []
+
+    # 1. Try CoinMarketCap First
     try:
-        symbols = ",".join(c["symbol"] for c in FALLBACK_MARKET)
         async with httpx.AsyncClient() as client:
             res = await client.get(
                 "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest",
@@ -99,12 +97,9 @@ async def get_live_market_data():
             res.raise_for_status()
             cmc_data = res.json()["data"]
 
-        market = []
-        for fallback in FALLBACK_MARKET:
-            sym = fallback["symbol"]
+        for sym in SUPPORTED_SYMBOLS:
             coin = cmc_data.get(sym)
             if not coin:
-                market.append(fallback)
                 continue
             q = coin["quote"]["USD"]
             market.append({
@@ -113,27 +108,26 @@ async def get_live_market_data():
                 "pair": f"{sym}/USD",
                 "current_price": float(q["price"]),
                 "price_change_percent": float(q.get("percent_change_24h", 0)),
-                "high_24h": float(q["price"]) * 1.05, 
+                "high_24h": float(q["price"]) * 1.05, # CMC basic tier doesn't always return 24h highs natively
                 "low_24h": float(q["price"]) * 0.95,
                 "volume": float(q.get("volume_24h", 0)),
                 "market_cap": float(q.get("market_cap", 0)),
             })
-        return market
+        if market:
+            return market
     except Exception:
         pass
 
+    # 2. Fallback to CoinCap
     try:
         async with httpx.AsyncClient() as client:
-            res = await client.get("https://api.coincap.io/v2/assets?limit=20", timeout=3.0)
+            res = await client.get("https://api.coincap.io/v2/assets?limit=50", timeout=3.0)
             res.raise_for_status()
             coincap_data = {c["symbol"]: c for c in res.json()["data"]}
 
-        market = []
-        for fallback in FALLBACK_MARKET:
-            sym = fallback["symbol"]
+        for sym in SUPPORTED_SYMBOLS:
             coin = coincap_data.get(sym)
             if not coin:
-                market.append(fallback)
                 continue
             price = float(coin["priceUsd"])
             market.append({
@@ -146,11 +140,13 @@ async def get_live_market_data():
                 "low_24h": price * 0.95,
                 "volume": float(coin.get("volumeUsd24Hr", 0)),
             })
-        return market
+        if market:
+            return market
     except Exception:
         pass
 
-    return FALLBACK_MARKET
+    # 3. Fail safe
+    raise HTTPException(status_code=503, detail="Unable to fetch live market data from upstream providers.")
 
 
 @router.get("/history")
@@ -194,6 +190,9 @@ async def execute_trade(
     if trade_type not in ("BUY", "SELL"):
         raise HTTPException(status_code=400, detail="trade_type must be BUY or SELL.")
 
+    if payload.symbol not in SUPPORTED_SYMBOLS:
+        raise HTTPException(status_code=400, detail=f"Unsupported asset: {payload.symbol}")
+
     current_price = await _fetch_live_price(payload.symbol)
     crypto_amount = payload.amount_usd / current_price
 
@@ -214,15 +213,14 @@ async def execute_trade(
                 raise HTTPException(status_code=400, detail="Insufficient USD balance.")
             usd_wallet.cached_balance = float(usd_wallet.cached_balance) - payload.amount_usd
             sub_wallet.balance = float(sub_wallet.balance) + crypto_amount
-            ledger_amount = -payload.amount_usd  # Deduction from main wallet
+            ledger_amount = -payload.amount_usd
         else:  # SELL
             if float(sub_wallet.balance) < crypto_amount:
                 raise HTTPException(status_code=400, detail=f"Insufficient {payload.symbol}.")
             sub_wallet.balance = float(sub_wallet.balance) - crypto_amount
             usd_wallet.cached_balance = float(usd_wallet.cached_balance) + payload.amount_usd
-            ledger_amount = payload.amount_usd  # Addition to main wallet
+            ledger_amount = payload.amount_usd
 
-        # 🚨 NEW: Log this trade directly into the Wallet Ledger so the user sees the money move
         ledger = LedgerTransaction(
             wallet_id=usd_wallet.id,
             amount=ledger_amount,
@@ -267,11 +265,13 @@ async def get_portfolio(
     usd_wallet = (await db.execute(select(Wallet).where(Wallet.user_id == current_user.id))).scalar_one_or_none()
     sub_wallets = (await db.execute(select(SubWallet).where(SubWallet.user_id == current_user.id, SubWallet.balance > 0))).scalars().all()
 
-    price_map: dict[str, float] = {c["symbol"]: c["current_price"] for c in FALLBACK_MARKET}
+    price_map: dict[str, float] = {}
     try:
         market = await get_live_market_data()
         price_map = {c["symbol"]: c["current_price"] for c in market}
     except Exception:
+        # Graceful degradation for portfolio view: if market APIs are down, we still 
+        # return the asset balances, but USD values will evaluate to 0.0 temporarily.
         pass
 
     assets = []
@@ -304,6 +304,9 @@ async def active_trade_adjust(
     ACTIVE TRADE SETTLEMENT: 
     Adjusts the Crypto Sub-Wallet directly. Does not touch the USD Wallet.
     """
+    if payload.symbol not in SUPPORTED_SYMBOLS:
+        raise HTTPException(status_code=400, detail=f"Unsupported asset: {payload.symbol}")
+
     try:
         current_price = await _fetch_live_price(payload.symbol)
         
@@ -317,13 +320,10 @@ async def active_trade_adjust(
         action = "ACTIVE_CLOSE" if payload.amount_crypto > 0 else "ACTIVE_START"
 
         if action == "ACTIVE_START":
-            # Starting the trade: Deduct the crypto wager
             if sub_wallet.balance < abs(payload.amount_crypto):
                 raise HTTPException(status_code=400, detail=f"Insufficient {payload.symbol} locked for this trade.")
-            sub_wallet.balance += payload.amount_crypto # Payload is negative
-            
+            sub_wallet.balance += payload.amount_crypto
         else:
-            # 🚨 FIX: Closing the trade: Pay the remaining crypto/profit DIRECTLY back to the Crypto Sub-Wallet
             sub_wallet.balance += payload.amount_crypto
 
         # Log the execution
