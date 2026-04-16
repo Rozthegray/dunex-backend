@@ -229,4 +229,4 @@ async def trigger_admin_seed(
     db.add(admin_wallet)
     
     await db.commit()
-    return {"status": "Superadmin successfully
+    return {"status": "Superadmin successfully created!"}
