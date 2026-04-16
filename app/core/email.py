@@ -64,7 +64,7 @@ def send_onboarding_email(to_email: str, full_name: str):
     <p>Your secure trading vault has been successfully established. We are thrilled to have you join our platform.</p>
     <p>To unlock your full portfolio capabilities—including  live trading, and withdrawals—please complete your brief identity verification (KYC) within your dashboard.</p>
     <br>
-    <a href="https://www.dunexmarkets.com/dashboard" style="background-color: #D4AF37; color: #05050A; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Access Your Dashboard</a>
+    <a href="https://app.dunexmarkets.com/dashboard" style="background-color: #D4AF37; color: #05050A; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Access Your Dashboard</a>
     <br><br>
     <p>If you need any assistance getting started, our support team is available 24/7 via the live chat in your account.</p>
     <p>Best regards,<br><strong>The Dunex Markets Team</strong></p>
