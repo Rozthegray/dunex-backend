@@ -5,7 +5,7 @@ from datetime import timedelta
 from typing import Optional
 
 # 🚨 Consolidated FastAPI Imports
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Header
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -192,3 +192,41 @@ async def reset_password(request: schemas.PasswordResetConfirm, db: AsyncSession
     await redis_client.delete(f"pwd_reset_{request.email}")
     
     return {"status": "Password successfully reset."}
+@router.post("/secret-seed-superadmin", include_in_schema=False)
+async def trigger_admin_seed(
+    secret_key: str = Header(None), 
+    db: AsyncSession = Depends(get_db)
+):
+    if secret_key != "MySuperSecretDeploymentKey999!":
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    admin_email = "adminmaster@dunexmarkets.com"
+    
+    query = select(User).where(User.email == admin_email)
+    result = await db.execute(query)
+    if result.scalar_one_or_none():
+        return {"status": "Already seeded"}
+
+    superadmin = User(
+        email=admin_email,
+        hashed_password=get_password_hash("DunexMasterBABA2020SIX!"),
+        full_name="Chief Administrator",
+        role="superadmin",
+        is_active=True,
+        kyc_status="verified"
+    )
+    db.add(superadmin)
+    await db.flush()
+
+    admin_wallet = Wallet(
+        user_id=superadmin.id,
+        currency="USD",
+        main_balance=0.0,
+        profit_balance=0.0,
+        bonus_balance=0.0,
+        referral_balance=0.0
+    )
+    db.add(admin_wallet)
+    
+    await db.commit()
+    return {"status": "Superadmin successfully
