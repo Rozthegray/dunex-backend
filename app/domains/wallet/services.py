@@ -12,14 +12,10 @@ async def execute_deposit(
     payment_method_id: str = None,
     proof_image_url: str = None
 ):
-    """
-    Registers a deposit request. Funds are held in a pending state 
-    until an administrator verifies and clears the transaction.
-    """
+    """Registers a deposit request. Funds are held in pending state."""
     if amount <= 0:
         raise ValueError("Deposit amount must be strictly positive.")
 
-    # 1. Verify the wallet exists
     query = select(Wallet).where(Wallet.id == wallet_id)
     result = await db.execute(query)
     wallet = result.scalar_one_or_none()
@@ -27,7 +23,6 @@ async def execute_deposit(
     if not wallet:
         raise HTTPException(status_code=404, detail="Wallet not found.")
 
-    # 2. Create the immutable ledger record (Credit)
     transaction = LedgerTransaction(
         wallet_id=wallet_id,
         amount=amount, 
@@ -35,17 +30,15 @@ async def execute_deposit(
         wallet_type="main", 
         status="pending",  
         reference=reference,
-        # 🚨 THE FIX: Map the URL straight to the actual database column!
         proof_url=proof_image_url, 
         destination_details=f"Method ID: {payment_method_id}" if payment_method_id else None
     )
     db.add(transaction)
 
-    # 3. Commit the transaction block
     await db.commit()
     await db.refresh(transaction)
-    
     return transaction
+
 
 async def execute_withdrawal(
     db: AsyncSession, 
@@ -54,9 +47,7 @@ async def execute_withdrawal(
     reference: str,
     destination_details: str = None 
 ):
-    """
-    Executes a withdrawal with a strict row-level lock to prevent race conditions.
-    """
+    """Executes an omni-withdrawal that pools liquidity from all 4 sub-wallets."""
     if amount <= 0:
         raise ValueError("Withdrawal amount must be strictly positive.")
 
@@ -68,29 +59,43 @@ async def execute_withdrawal(
     if not wallet:
         raise HTTPException(status_code=404, detail="Wallet not found.")
 
-    # 🚨 FIX: Now checks against 'main_balance' instead of the deleted 'cached_balance'
-    if wallet.main_balance < amount:
+    # 🚨 THE FIX: Calculate Total Equity across the entire ledger
+    total_equity = (
+        (wallet.main_balance or 0.0) + 
+        (wallet.profit_balance or 0.0) + 
+        (wallet.bonus_balance or 0.0) + 
+        (wallet.referral_balance or 0.0)
+    )
+
+    if total_equity < amount:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
-            detail="Insufficient funds in Main Balance."
+            detail=f"Insufficient funds. Total available equity is ${total_equity:.2f}."
         )
 
-
-# 2. Create the immutable ledger record (Debit)
+    # 2. Create the immutable ledger record
     transaction = LedgerTransaction(
         wallet_id=wallet_id,
         amount=-amount, 
         transaction_type="withdrawal",
-        wallet_type="main", 
+        wallet_type="main", # Records as a general withdrawal on the main ledger
         status="pending", 
         reference=reference,
         destination_details=destination_details 
-        # Make sure there is NO proof_url line here at all!
     )
     db.add(transaction)
     
-    # 🚨 FIX: Deduct from 'main_balance' immediately to prevent double-spending
-    wallet.main_balance -= amount
+    # 🚨 THE FIX: Cascade the deduction progressively across all wallets
+    remaining_to_deduct = amount
+    for field in ("main_balance", "profit_balance", "bonus_balance", "referral_balance"):
+        if remaining_to_deduct <= 0:
+            break
+        
+        current_val = getattr(wallet, field) or 0.0
+        if current_val > 0:
+            deduction = min(current_val, remaining_to_deduct)
+            setattr(wallet, field, current_val - deduction)
+            remaining_to_deduct -= deduction
 
     # 4. Commit the transaction block
     await db.commit()
