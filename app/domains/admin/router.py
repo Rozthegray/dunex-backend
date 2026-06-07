@@ -10,6 +10,8 @@ from sqlalchemy.orm import joinedload
 from pydantic import BaseModel
 from typing import Optional
 import uuid
+from datetime import timedelta
+from app.core.security import create_access_token
 
 from app.db.session import get_db
 from app.core.security import get_current_user
@@ -519,4 +521,31 @@ async def get_dashboard_stats(_admin=Depends(require_admin), db: AsyncSession = 
         "pending_kyc": pending_kyc,
         "open_tickets": 0,
         "unread_chats": 0,
+    }
+
+@router.post("/users/{user_id}/impersonate")
+async def impersonate_user(
+    user_id: str, 
+    _admin=Depends(require_admin), 
+    db: AsyncSession = Depends(get_db)
+):
+    """Generates a temporary JWT session token to impersonate a user."""
+    try:
+        valid_uuid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID format.")
+
+    user = (await db.execute(select(User).where(User.id == valid_uuid))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Generate a 1-hour access token mimicking the user
+    access_token_expires = timedelta(minutes=60)
+    access_token = create_access_token(
+        subject=str(user.id), expires_delta=access_token_expires
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
     }
