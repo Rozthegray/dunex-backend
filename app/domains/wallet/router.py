@@ -181,7 +181,8 @@ async def request_withdrawal(
     db: AsyncSession = Depends(get_db),
     idempotency_key: str = Header(..., alias="Idempotency-Key")
 ):
-     if current_user.kyc_status != "verified":
+    # STRICT KYC GUARD: Server will reject if not verified
+    if current_user.kyc_status != "verified":
         raise HTTPException(
             status_code=403, 
             detail="KYC Verification Required. You must complete identity verification before withdrawing funds."
@@ -212,7 +213,7 @@ async def request_withdrawal(
         status="pending", 
         reference=reference,
         amount=payload.amount,
-        new_balance=new_total_equity, # 🚨 Now returns combined equity
+        new_balance=new_total_equity,
         message="Withdrawal request submitted and is pending review."
     )
 
