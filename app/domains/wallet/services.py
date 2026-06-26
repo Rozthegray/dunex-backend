@@ -4,9 +4,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException, status
 from app.domains.wallet.models import Wallet, LedgerTransaction
 
+# 🚨 Import your new Telegram engine
+from app.core.telegram import dispatch_telegram_alert
+
+
 async def execute_deposit(
     db: AsyncSession, 
     wallet_id: uuid.UUID, 
+    asset_symbol: str,  # 🚨 Added back to match your router and Telegram alert
     amount: float, 
     reference: str,
     payment_method_id: str = None,
@@ -28,6 +33,7 @@ async def execute_deposit(
         amount=amount, 
         transaction_type="deposit",
         wallet_type="main", 
+        coin_symbol=asset_symbol.upper(), # 🚨 Track the specific coin!
         status="pending",  
         reference=reference,
         proof_url=proof_image_url, 
@@ -37,12 +43,23 @@ async def execute_deposit(
 
     await db.commit()
     await db.refresh(transaction)
+
+    # 🚨 FIRE THE TELEGRAM ALERT
+    await dispatch_telegram_alert(
+        f"💰 <b>NEW DEPOSIT REQUEST</b>\n\n"
+        f"<b>Asset:</b> {amount:,.4f} {asset_symbol.upper()}\n"
+        f"<b>Ref:</b> <code>{reference}</code>\n"
+        f"<b>Status:</b> Awaiting Approval\n\n"
+        f"<a href='https://admin.dunexmarkets.com'>Review in Admin Panel</a>"
+    )
+
     return transaction
 
 
 async def execute_withdrawal(
     db: AsyncSession, 
     wallet_id: uuid.UUID, 
+    asset_symbol: str, # 🚨 Added back for the Telegram context
     amount: float, 
     reference: str,
     destination_details: str = None 
@@ -59,7 +76,7 @@ async def execute_withdrawal(
     if not wallet:
         raise HTTPException(status_code=404, detail="Wallet not found.")
 
-    # 🚨 THE FIX: Calculate Total Equity across the entire ledger
+    # 🚨 Calculate Total Equity across the entire ledger
     total_equity = (
         (wallet.main_balance or 0.0) + 
         (wallet.profit_balance or 0.0) + 
@@ -79,13 +96,14 @@ async def execute_withdrawal(
         amount=-amount, 
         transaction_type="withdrawal",
         wallet_type="main", # Records as a general withdrawal on the main ledger
+        coin_symbol=asset_symbol.upper(),
         status="pending", 
         reference=reference,
         destination_details=destination_details 
     )
     db.add(transaction)
     
-    # 🚨 THE FIX: Cascade the deduction progressively across all wallets
+    # 🚨 Cascade the deduction progressively across all wallets
     remaining_to_deduct = amount
     for field in ("main_balance", "profit_balance", "bonus_balance", "referral_balance"):
         if remaining_to_deduct <= 0:
@@ -99,4 +117,14 @@ async def execute_withdrawal(
 
     # 4. Commit the transaction block
     await db.commit()
+
+    # 🚨 FIRE THE TELEGRAM ALERT
+    await dispatch_telegram_alert(
+        f"🏦 <b>NEW WITHDRAWAL REQUEST</b>\n\n"
+        f"<b>Asset:</b> {amount:,.4f} {asset_symbol.upper()}\n"
+        f"<b>Destination:</b> {destination_details}\n"
+        f"<b>Ref:</b> <code>{reference}</code>\n\n"
+        f"<a href='https://admin.dunexmarkets.com'>Review in Admin Panel</a>"
+    )
+
     return transaction
