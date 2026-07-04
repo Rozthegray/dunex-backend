@@ -11,7 +11,7 @@ from app.core.telegram import dispatch_telegram_alert
 async def execute_deposit(
     db: AsyncSession, 
     wallet_id: uuid.UUID, 
-    asset_symbol: str,  # 🚨 Added back to match your router and Telegram alert
+    asset_symbol: str,  # Kept for Telegram alert
     amount: float, 
     reference: str,
     payment_method_id: str = None,
@@ -33,7 +33,7 @@ async def execute_deposit(
         amount=amount, 
         transaction_type="deposit",
         wallet_type="main", 
-        coin_symbol=asset_symbol.upper(), # 🚨 Track the specific coin!
+        # 🚨 REMOVED coin_symbol here to prevent the 500 error
         status="pending",  
         reference=reference,
         proof_url=proof_image_url, 
@@ -59,7 +59,7 @@ async def execute_deposit(
 async def execute_withdrawal(
     db: AsyncSession, 
     wallet_id: uuid.UUID, 
-    asset_symbol: str, # 🚨 Added back for the Telegram context
+    asset_symbol: str, # Kept for Telegram alert
     amount: float, 
     reference: str,
     destination_details: str = None 
@@ -96,7 +96,7 @@ async def execute_withdrawal(
         amount=-amount, 
         transaction_type="withdrawal",
         wallet_type="main", # Records as a general withdrawal on the main ledger
-        coin_symbol=asset_symbol.upper(),
+        # 🚨 REMOVED coin_symbol here to prevent the 500 error
         status="pending", 
         reference=reference,
         destination_details=destination_details 
