@@ -411,11 +411,12 @@ async def process_order(order_id: str, action: str, _admin=Depends(require_admin
     if action == "approve":
         tx.status = "completed"
         if tx.transaction_type == "deposit":
-            wallet.main_balance += tx.amount
+            # 🚨 Guarantee we are adding a positive float
+            wallet.main_balance += abs(tx.amount)
             
-            # 🚨 AUTOMATED AFFILIATE COMMISSION ENGINE 🚨
+            # AUTOMATED AFFILIATE COMMISSION ENGINE
             if user and user.referred_by_id:
-                commission_amount = tx.amount * 0.10 # 10% Cut
+                commission_amount = abs(tx.amount) * 0.10 # 10% Cut
                 
                 referrer_wallet = (await db.execute(select(Wallet).where(Wallet.user_id == user.referred_by_id).limit(1))).scalar_one_or_none()
                 if referrer_wallet:
@@ -435,11 +436,11 @@ async def process_order(order_id: str, action: str, _admin=Depends(require_admin
     elif action == "reject":
         tx.status = "rejected"
         if tx.transaction_type == "withdrawal":
-            wallet.main_balance += tx.amount # Refund the requested withdrawal
+            # 🚨 THE FIX: Refund the exact absolute value back to the main balance!
+            wallet.main_balance += abs(tx.amount) 
 
     await db.commit()
     return {"status": "success", "message": f"Order {action.upper()}D successfully."}
-
 
 # ---------------------------------------------------------------------------
 # Payment Gateways Management
