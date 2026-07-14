@@ -155,13 +155,22 @@ async def request_deposit(
         if not wallet:
             raise HTTPException(status_code=404, detail="Wallet not found.")
 
-        # 🚨 Stream directly to Cloudinary
+        # Stream directly to Cloudinary
         image_data = await proof_image.read()
         proof_url = await upload_to_cloudinary(image_data, proof_image.filename)
         
         reference = f"DEP-{uuid.uuid4().hex[:12].upper()}"
         
-        await services.execute_deposit(db, wallet.id, amount, reference, uuid.UUID(payment_method_id), proof_url)
+        # 🚨 THE FIX: Pass wallet.currency as the asset_symbol
+        await services.execute_deposit(
+            db=db, 
+            wallet_id=wallet.id, 
+            asset_symbol=wallet.currency,  # <--- Added!
+            amount=amount, 
+            reference=reference, 
+            payment_method_id=str(payment_method_id), 
+            proof_image_url=proof_url
+        )
         await db.refresh(wallet)
 
         return {
@@ -196,9 +205,11 @@ async def request_withdrawal(
 
     reference = f"WDW-{uuid.uuid4().hex[:12].upper()}"
 
+    # 🚨 THE FIX: Pass wallet.currency as the asset_symbol
     await services.execute_withdrawal(
         db=db, 
         wallet_id=wallet.id, 
+        asset_symbol=wallet.currency,  # <--- Added!
         amount=payload.amount, 
         reference=reference,
         destination_details=payload.destination_details 
@@ -206,7 +217,7 @@ async def request_withdrawal(
     
     await db.refresh(wallet)
 
-    # 🚨 Calculate the new total for the UI response
+    # Calculate the new total for the UI response
     new_total_equity = (wallet.main_balance or 0.0) + (wallet.profit_balance or 0.0) + (wallet.bonus_balance or 0.0) + (wallet.referral_balance or 0.0)
 
     return schemas.TransactionResponse(
