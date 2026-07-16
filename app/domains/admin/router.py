@@ -3,7 +3,7 @@ Dunex Markets — Admin Router
 Full platform control: site settings, user management, KYC review, balances, and order processing.
 All endpoints require role == 'admin' or 'superadmin'.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from sqlalchemy.orm import joinedload
@@ -17,6 +17,10 @@ from app.db.session import get_db
 from app.core.security import get_current_user
 from app.domains.users.models import User, SiteSettings
 from app.domains.wallet.models import Wallet, LedgerTransaction, PaymentMethod
+
+# 🚨 Import the notification engines
+from app.core.email import send_rejection_email
+from app.core.whatsapp import dispatch_whatsapp_alert
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -397,7 +401,13 @@ async def get_orders(status: Optional[str] = "pending", _admin=Depends(require_a
 
 
 @router.post("/orders/{order_id}/{action}")
-async def process_order(order_id: str, action: str, _admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
+async def process_order(
+    order_id: str, 
+    action: str, 
+    reason: Optional[str] = Query(None, description="Reason for rejection"), # 🚨 Added Reason Catcher
+    _admin=Depends(require_admin), 
+    db: AsyncSession = Depends(get_db)
+):
     """Approves/rejects orders AND powers the Affiliate Referral Engine."""
     if action not in ["approve", "reject"]: raise HTTPException(status_code=400, detail="Invalid action.")
 
@@ -411,7 +421,6 @@ async def process_order(order_id: str, action: str, _admin=Depends(require_admin
     if action == "approve":
         tx.status = "completed"
         if tx.transaction_type == "deposit":
-            # 🚨 Guarantee we are adding a positive float
             wallet.main_balance += abs(tx.amount)
             
             # AUTOMATED AFFILIATE COMMISSION ENGINE
@@ -436,8 +445,21 @@ async def process_order(order_id: str, action: str, _admin=Depends(require_admin
     elif action == "reject":
         tx.status = "rejected"
         if tx.transaction_type == "withdrawal":
-            # 🚨 THE FIX: Refund the exact absolute value back to the main balance!
+            # Refund the absolute value back to the main balance!
             wallet.main_balance += abs(tx.amount) 
+            
+            # 🚨 FIRE ALERTS IF REASON IS PROVIDED
+            if reason:
+                # 1. Send the email directly to the user
+                await send_rejection_email(user.email, user.full_name or "Trader", tx.amount, reason)
+                
+                # 2. Fire the Anonymous WhatsApp Notification to the Admin
+                await dispatch_whatsapp_alert(
+                    f"🚫 *WITHDRAWAL REJECTED*\n\n"
+                    f"*User:* {user.email}\n"
+                    f"*Refunded:* ${abs(tx.amount):,.2f}\n"
+                    f"*Reason Sent:* {reason}"
+                )
 
     await db.commit()
     return {"status": "success", "message": f"Order {action.upper()}D successfully."}
