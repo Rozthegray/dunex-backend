@@ -25,7 +25,7 @@ def _send_zoho_email(to_email: str, subject: str, raw_body: str, category: str):
     msg['To'] = to_email
     msg['Subject'] = subject
     
-    # 🚨 Master HTML Wrapper for ALL emails
+    # Master HTML Wrapper for ALL emails
     html_template = f"""
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #05050a; color: #ffffff; padding: 40px; border-radius: 12px; border: 1px solid #1f2937;">
         <div style="text-align: left; margin-bottom: 30px;">
@@ -43,14 +43,18 @@ def _send_zoho_email(to_email: str, subject: str, raw_body: str, category: str):
     msg.attach(MIMEText(html_template, 'html'))
 
     try:
-        # 🚨 CRITICAL FIX: Use SMTP_SSL for Port 465 on Render
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-            # Do NOT add server.starttls() here. Port 465 encrypts automatically.
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.send_message(msg)
         print(f"[ZOHO SMTP] {category} successfully sent to {to_email}")
     except Exception as e:
         print(f"[ZOHO ERROR] {category} Dispatch Failed: {e}")
+
+# 🚨 THE FIX: A bridge for the Chat Router so it doesn't crash
+def _send_api_email(to_email: str, subject: str, body: str):
+    """Legacy bridge for the chat router to use the new Zoho engine."""
+    _send_zoho_email(to_email, subject, body, "Chat System Alert")
+
 
 # ---------------------------------------------------------
 # Public Email Functions
@@ -79,7 +83,6 @@ def send_admin_new_chat_alert(user_email: str, first_message: str):
     _send_zoho_email(ADMIN_ALERT_EMAIL, f"New Chat from {user_email}", body, "Live Chat Alert")
 
 
-# 🚨 THE MISSING FUNCTION (Added to sync perfectly with your admin router)
 async def send_rejection_email(user_email: str, user_name: str, amount: float, reason: str):
     """Fires a styled Zoho email to the user explaining the withdrawal rejection."""
     body = f"""
@@ -99,7 +102,6 @@ async def send_rejection_email(user_email: str, user_name: str, amount: float, r
     </p>
     """
     
-    # Executes the synchronous Zoho engine securely in the background
     await asyncio.to_thread(
         _send_zoho_email, 
         user_email, 
