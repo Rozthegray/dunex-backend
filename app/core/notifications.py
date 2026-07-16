@@ -7,8 +7,8 @@ Set these env vars:
   EXPO_ACCESS_TOKEN (optional)
 """
 import os
+import asyncio
 import httpx
-from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.domains.notifications.models import Notification
 
@@ -131,5 +131,7 @@ async def send_push_to_user(expo_token: str, title: str, body: str, db: AsyncSes
 
 async def notify_admin_new_chat(user_email: str, message: str, db: AsyncSession):
     """Convenience: fire all admin notifications at once for new chat message."""
-    await send_whatsapp_to_admin(user_email, message, db)
-    await send_admin_email_alert(user_email, message, db)
+    await asyncio.gather(
+        send_whatsapp_to_admin(user_email, message, db),
+        send_admin_email_alert(user_email, message, db),
+    )
