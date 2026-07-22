@@ -4,7 +4,6 @@ import uuid
 from datetime import timedelta
 from typing import Optional
 
-# 🚨 Consolidated FastAPI Imports
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Header
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -71,12 +70,10 @@ async def login_for_access_token(
 @router.post("/register")
 async def register_user(
     request: ExtendedRegisterRequest, 
-    background_tasks: BackgroundTasks, # 🚨 Injected BackgroundTasks
+    background_tasks: BackgroundTasks, 
     db: AsyncSession = Depends(get_db)
 ):
     """Creates a new user, links referrals, provisions a wallet, and sends email."""
-    
-    # 🚨 BACKEND VALIDATION (Feeds the frontend warning popups)
     if not request.full_name or not request.password or not request.email:
         raise HTTPException(status_code=400, detail="All identity fields must be populated.")
     if len(request.password) < 8:
@@ -89,7 +86,6 @@ async def register_user(
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email already registered.")
 
-    # 🚨 REFERRAL SYSTEM
     referrer_id = None
     if request.referral_code:
         clean_code = request.referral_code.strip().upper()
@@ -109,7 +105,6 @@ async def register_user(
     db.add(new_user)
     await db.flush() 
     
-    # 🚨 4-BALANCE WALLET SETUP
     new_wallet = Wallet(
         user_id=new_user.id, 
         currency="USD", 
@@ -121,7 +116,6 @@ async def register_user(
     db.add(new_wallet)
     await db.commit()
 
-    # 🚨 DISPATCH ONBOARDING EMAIL VIA MAILTRAP
     background_tasks.add_task(send_onboarding_email, safe_email, request.full_name)
 
     return {"status": "success", "message": "User registered successfully"}
@@ -154,10 +148,10 @@ async def get_current_user_profile(
 @router.post("/recover-password")
 async def recover_password(
     request: schemas.PasswordRecoveryRequest, 
-    background_tasks: BackgroundTasks, # 🚨 Injected BackgroundTasks
+    background_tasks: BackgroundTasks, 
     db: AsyncSession = Depends(get_db)
 ):
-    """Generates a 6-digit code and fires it via Mailtrap."""
+    """Generates a 6-digit code and fires it via Zoho."""
     query = select(User).where(User.email == request.email)
     result = await db.execute(query)
     user = result.scalar_one_or_none()
@@ -166,8 +160,8 @@ async def recover_password(
         reset_code = str(random.randint(100000, 999999))
         await redis_client.setex(f"pwd_reset_{user.email}", 900, reset_code)
         
-        # 🚨 DISPATCH RECOVERY EMAIL VIA MAILTRAP
-        background_tasks.add_task(send_password_reset_email, user.email, reset_code)
+        # 🚨 DIRECT AWAIT: Fixes silent ghosting on Render
+        await send_password_reset_email(user.email, reset_code)
 
     return {"status": "Recovery email dispatched if account exists."}
 
@@ -185,13 +179,13 @@ async def reset_password(request: schemas.PasswordResetConfirm, db: AsyncSession
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
         
-    # 🚨 Swapped back to request.new_password
     user.hashed_password = get_password_hash(request.new_password)
     
     await db.commit()
     await redis_client.delete(f"pwd_reset_{request.email}")
     
     return {"status": "Password successfully reset."}
+
 @router.post("/secret-seed-superadmin", include_in_schema=False)
 async def trigger_admin_seed(
     secret_key: str = Header(None), 

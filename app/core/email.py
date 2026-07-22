@@ -50,11 +50,9 @@ def _send_zoho_email(to_email: str, subject: str, raw_body: str, category: str):
     except Exception as e:
         print(f"[ZOHO ERROR] {category} Dispatch Failed: {e}")
 
-# 🚨 THE FIX: A bridge for the Chat Router so it doesn't crash
+# Legacy bridge for the chat router
 def _send_api_email(to_email: str, subject: str, body: str):
-    """Legacy bridge for the chat router to use the new Zoho engine."""
     _send_zoho_email(to_email, subject, body, "Chat System Alert")
-
 
 # ---------------------------------------------------------
 # Public Email Functions
@@ -64,15 +62,21 @@ def send_onboarding_email(to_email: str, full_name: str):
     body = f"Welcome to Dunex Markets, {full_name}. Please complete your KYC to unlock full trading capabilities."
     _send_zoho_email(to_email, "Welcome to Dunex Markets", body, "Onboarding")
 
-def send_password_reset_email(to_email: str, reset_code: str):
+# 🚨 UPGRADED TO ASYNC: Fixes silent failures on Render
+async def send_password_reset_email(to_email: str, reset_code: str):
     body = f"Your password reset code is: <strong>{reset_code}</strong>. This code expires in 15 minutes."
-    _send_zoho_email(to_email, "Dunex Markets: Password Reset", body, "Password Reset")
+    await asyncio.to_thread(
+        _send_zoho_email, 
+        to_email, 
+        "Dunex Markets: Password Reset", 
+        body, 
+        "Password Reset"
+    )
 
 def send_admin_broadcast_email(to_email: str, subject: str, message_body: str):
     _send_zoho_email(to_email, subject, message_body, "Admin Broadcast")
 
 def send_admin_new_chat_alert(user_email: str, first_message: str):
-    """Fires an email to the admin when a user initiates a live chat."""
     body = f"""
     <h3 style="color: #D4AF37;">New Live Chat Initiated</h3>
     <p><strong>User:</strong> {user_email}</p>
@@ -82,9 +86,7 @@ def send_admin_new_chat_alert(user_email: str, first_message: str):
     """
     _send_zoho_email(ADMIN_ALERT_EMAIL, f"New Chat from {user_email}", body, "Live Chat Alert")
 
-
 async def send_rejection_email(user_email: str, user_name: str, amount: float, reason: str):
-    """Fires a styled Zoho email to the user explaining the withdrawal rejection."""
     body = f"""
     <h2 style="color: #D4AF37; margin-bottom: 20px;">Withdrawal Update</h2>
     <p style="font-size: 16px; color: #E2E8F4;">Hello {user_name},</p>
