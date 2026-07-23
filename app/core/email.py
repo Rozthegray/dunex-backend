@@ -13,6 +13,7 @@ FROM_EMAIL = os.getenv("FROM_EMAIL", "Dunex Support <support@dunexmarkets.com>")
 ADMIN_ALERT_EMAIL = os.getenv("ADMIN_ALERT_EMAIL", "admin@dunexmarkets.com")
 
 LOGO_URL = "https://res.cloudinary.com/dkpicfvgv/image/upload/icon_oo2lbm.png"
+
 def _send_zoho_email(to_email: str, subject: str, raw_body: str, category: str):
     """Internal helper to dispatch branded emails securely via Zoho."""
     if not SMTP_USERNAME or not SMTP_PASSWORD:
@@ -42,22 +43,27 @@ def _send_zoho_email(to_email: str, subject: str, raw_body: str, category: str):
     msg.attach(MIMEText(html_template, 'html'))
 
     try:
-        # 🚨 THE FIX: Dynamically route based on the port provided in Render
+        # THE PORT FIX: Dynamically route based on the port provided in Render
         if SMTP_PORT == 465:
-            # Port 465 requires direct SSL
             with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
                 server.login(SMTP_USERNAME, SMTP_PASSWORD)
                 server.send_message(msg)
         else:
-            # Port 587 requires a standard connection upgraded via STARTTLS
             with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-                server.starttls() # Secure the connection
+                server.starttls()
                 server.login(SMTP_USERNAME, SMTP_PASSWORD)
                 server.send_message(msg)
                 
         print(f"[ZOHO SMTP] {category} successfully sent to {to_email}")
     except Exception as e:
         print(f"[ZOHO ERROR] {category} Dispatch Failed: {e}")
+
+
+# 🚨 THE BRIDGE FIX: Keeps the chat router from crashing the server
+def _send_api_email(to_email: str, subject: str, body: str):
+    """Legacy bridge for the chat router to use the new Zoho engine."""
+    _send_zoho_email(to_email, subject, body, "Chat System Alert")
+
 
 # ---------------------------------------------------------
 # Public Email Functions
@@ -67,16 +73,9 @@ def send_onboarding_email(to_email: str, full_name: str):
     body = f"Welcome to Dunex Markets, {full_name}. Please complete your KYC to unlock full trading capabilities."
     _send_zoho_email(to_email, "Welcome to Dunex Markets", body, "Onboarding")
 
-# 🚨 UPGRADED TO ASYNC: Fixes silent failures on Render
-async def send_password_reset_email(to_email: str, reset_code: str):
+def send_password_reset_email(to_email: str, reset_code: str):
     body = f"Your password reset code is: <strong>{reset_code}</strong>. This code expires in 15 minutes."
-    await asyncio.to_thread(
-        _send_zoho_email, 
-        to_email, 
-        "Dunex Markets: Password Reset", 
-        body, 
-        "Password Reset"
-    )
+    _send_zoho_email(to_email, "Dunex Markets: Password Reset", body, "Password Reset")
 
 def send_admin_broadcast_email(to_email: str, subject: str, message_body: str):
     _send_zoho_email(to_email, subject, message_body, "Admin Broadcast")
