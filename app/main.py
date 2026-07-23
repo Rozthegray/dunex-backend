@@ -59,9 +59,9 @@ ALLOWED_ORIGINS = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS, 
+    allow_origins=["*"],  # Allows ALL frontend domains and local IPs
     allow_credentials=True,
-    allow_methods=["*"],              # 🚨 Changed to allow all to prevent preflight fails
+    allow_methods=["*"],  
     allow_headers=["*"],
 )
 
