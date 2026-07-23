@@ -13,7 +13,6 @@ FROM_EMAIL = os.getenv("FROM_EMAIL", "Dunex Support <support@dunexmarkets.com>")
 ADMIN_ALERT_EMAIL = os.getenv("ADMIN_ALERT_EMAIL", "admin@dunexmarkets.com")
 
 LOGO_URL = "https://res.cloudinary.com/dkpicfvgv/image/upload/icon_oo2lbm.png"
-
 def _send_zoho_email(to_email: str, subject: str, raw_body: str, category: str):
     """Internal helper to dispatch branded emails securely via Zoho."""
     if not SMTP_USERNAME or not SMTP_PASSWORD:
@@ -43,16 +42,22 @@ def _send_zoho_email(to_email: str, subject: str, raw_body: str, category: str):
     msg.attach(MIMEText(html_template, 'html'))
 
     try:
-        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.send_message(msg)
+        # 🚨 THE FIX: Dynamically route based on the port provided in Render
+        if SMTP_PORT == 465:
+            # Port 465 requires direct SSL
+            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.send_message(msg)
+        else:
+            # Port 587 requires a standard connection upgraded via STARTTLS
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+                server.starttls() # Secure the connection
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.send_message(msg)
+                
         print(f"[ZOHO SMTP] {category} successfully sent to {to_email}")
     except Exception as e:
         print(f"[ZOHO ERROR] {category} Dispatch Failed: {e}")
-
-# Legacy bridge for the chat router
-def _send_api_email(to_email: str, subject: str, body: str):
-    _send_zoho_email(to_email, subject, body, "Chat System Alert")
 
 # ---------------------------------------------------------
 # Public Email Functions
