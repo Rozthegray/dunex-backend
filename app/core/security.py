@@ -34,6 +34,13 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 def get_password_hash(password: str) -> str:
+    """Safely hashes passwords while preventing the bcrypt 72-byte limitation crash."""
+    # Truncate the password to 72 bytes (UTF-8 encoded) to satisfy bcrypt's hard limit
+    if isinstance(password, str):
+        password_bytes = password.encode('utf-8')
+        if len(password_bytes) > 72:
+            password = password_bytes[:72].decode('utf-8', errors='ignore')
+            
     return pwd_context.hash(password)
 
 # ── Token Logic ───────────────────────────────────────────────
