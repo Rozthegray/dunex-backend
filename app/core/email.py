@@ -1,31 +1,19 @@
 import os
-import smtplib
+import resend
 import asyncio
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
-# 🚨 Zoho Credentials from your .env
-SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.zoho.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+# 🚨 Pulls from your .env
+resend.api_key = os.getenv("RESEND_API_KEY")
 FROM_EMAIL = os.getenv("FROM_EMAIL", "Dunex Support <support@dunexmarkets.com>")
 ADMIN_ALERT_EMAIL = os.getenv("ADMIN_ALERT_EMAIL", "admin@dunexmarkets.com")
-
 LOGO_URL = "https://res.cloudinary.com/dkpicfvgv/image/upload/icon_oo2lbm.png"
 
-def _send_zoho_email(to_email: str, subject: str, raw_body: str, category: str):
-    """Internal helper to dispatch branded emails securely via Zoho."""
-    if not SMTP_USERNAME or not SMTP_PASSWORD:
-        print(f"[WARNING] Email skipped for {to_email}. Zoho credentials missing.")
+def _send_api_email_sync(to_email: str, subject: str, raw_body: str, category: str):
+    """Internal helper to dispatch branded emails over HTTPS (Bypassing SMTP blocks)."""
+    if not resend.api_key:
+        print(f"[WARNING] Email skipped for {to_email}. Resend API key missing.")
         return
 
-    msg = MIMEMultipart()
-    msg['From'] = FROM_EMAIL
-    msg['To'] = to_email
-    msg['Subject'] = subject
-    
-    # Master HTML Wrapper for ALL emails
     html_template = f"""
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #05050a; color: #ffffff; padding: 40px; border-radius: 12px; border: 1px solid #1f2937;">
         <div style="text-align: left; margin-bottom: 30px;">
@@ -40,45 +28,35 @@ def _send_zoho_email(to_email: str, subject: str, raw_body: str, category: str):
     </div>
     """
 
-    msg.attach(MIMEText(html_template, 'html'))
-
     try:
-        # THE PORT FIX: Dynamically route based on the port provided in Render
-        if SMTP_PORT == 465:
-            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-                server.login(SMTP_USERNAME, SMTP_PASSWORD)
-                server.send_message(msg)
-        else:
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-                server.starttls()
-                server.login(SMTP_USERNAME, SMTP_PASSWORD)
-                server.send_message(msg)
-                
-        print(f"[ZOHO SMTP] {category} successfully sent to {to_email}")
+        resend.Emails.send({
+            "from": FROM_EMAIL, 
+            "to": to_email,
+            "subject": subject,
+            "html": html_template
+        })
+        print(f"[RESEND API] {category} successfully sent to {to_email}")
     except Exception as e:
-        print(f"[ZOHO ERROR] {category} Dispatch Failed: {e}")
+        print(f"[RESEND ERROR] {category} Dispatch Failed: {e}")
 
-
-# 🚨 THE BRIDGE FIX: Keeps the chat router from crashing the server
+# 🚨 THE BRIDGE FIX: Keeps the chat router from crashing
 def _send_api_email(to_email: str, subject: str, body: str):
-    """Legacy bridge for the chat router to use the new Zoho engine."""
-    _send_zoho_email(to_email, subject, body, "Chat System Alert")
-
+    _send_api_email_sync(to_email, subject, body, "Chat System Alert")
 
 # ---------------------------------------------------------
-# Public Email Functions (Upgraded to Async)
+# Public Email Functions (Fully Async via HTTPS)
 # ---------------------------------------------------------
 
 async def send_onboarding_email(to_email: str, full_name: str):
     body = f"Welcome to Dunex Markets, {full_name}. Please complete your KYC to unlock full trading capabilities."
-    await asyncio.to_thread(_send_zoho_email, to_email, "Welcome to Dunex Markets", body, "Onboarding")
+    await asyncio.to_thread(_send_api_email_sync, to_email, "Welcome to Dunex Markets", body, "Onboarding")
 
 async def send_password_reset_email(to_email: str, reset_code: str):
     body = f"Your password reset code is: <strong>{reset_code}</strong>. This code expires in 15 minutes."
-    await asyncio.to_thread(_send_zoho_email, to_email, "Dunex Markets: Password Reset", body, "Password Reset")
+    await asyncio.to_thread(_send_api_email_sync, to_email, "Dunex Markets: Password Reset", body, "Password Reset")
 
 async def send_admin_broadcast_email(to_email: str, subject: str, message_body: str):
-    await asyncio.to_thread(_send_zoho_email, to_email, subject, message_body, "Admin Broadcast")
+    await asyncio.to_thread(_send_api_email_sync, to_email, subject, message_body, "Admin Broadcast")
 
 async def send_admin_new_chat_alert(user_email: str, first_message: str):
     body = f"""
@@ -88,7 +66,7 @@ async def send_admin_new_chat_alert(user_email: str, first_message: str):
     <br>
     <a href="https://dunexmarkets.com/admin/chat" style="background-color: #D4AF37; color: #05050A; padding: 10px 20px; text-decoration: none; border-radius: 6px; font-weight: bold;">Reply in Dashboard</a>
     """
-    await asyncio.to_thread(_send_zoho_email, ADMIN_ALERT_EMAIL, f"New Chat from {user_email}", body, "Live Chat Alert")
+    await asyncio.to_thread(_send_api_email_sync, ADMIN_ALERT_EMAIL, f"New Chat from {user_email}", body, "Live Chat Alert")
 
 async def send_rejection_email(user_email: str, user_name: str, amount: float, reason: str):
     body = f"""
@@ -107,11 +85,4 @@ async def send_rejection_email(user_email: str, user_name: str, amount: float, r
         Please address this issue and submit a new request, or contact our Live Support directly from your dashboard if you need assistance.
     </p>
     """
-    
-    await asyncio.to_thread(
-        _send_zoho_email, 
-        user_email, 
-        "Important Update Regarding Your Withdrawal", 
-        body, 
-        "Withdrawal Rejection"
-    )
+    await asyncio.to_thread(_send_api_email_sync, user_email, "Important Update Regarding Your Withdrawal", body, "Withdrawal Rejection")
