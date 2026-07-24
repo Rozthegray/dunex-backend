@@ -1,10 +1,10 @@
 import os
 import uuid
+import bcrypt
 from datetime import datetime, timedelta
 from typing import Optional, Union
 
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -20,28 +20,32 @@ SECRET_KEY = os.getenv("SECRET_KEY", "your-super-secret-key-change-this-in-prod"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 # This tells FastAPI where to look for the login token
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 class TokenData(BaseModel):
     sub: Optional[str] = None
 
-# ── Password Logic ────────────────────────────────────────────
+# ── Password Logic (Native Bcrypt) ────────────────────────────
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verifies a plain password against the stored hash using native bcrypt."""
+    plain_bytes = plain_password.encode('utf-8')
+    if len(plain_bytes) > 72:
+        plain_bytes = plain_bytes[:72]
+        
+    hash_bytes = hashed_password.encode('utf-8')
+    return bcrypt.checkpw(plain_bytes, hash_bytes)
 
 def get_password_hash(password: str) -> str:
-    """Securely hashes a password, ensuring it is safely truncated to 72 bytes to satisfy bcrypt."""
-    if isinstance(password, str):
-        # Convert to UTF-8 bytes and slice at 72 bytes max
-        password_bytes = password.encode('utf-8')
-        if len(password_bytes) > 72:
-            password = password_bytes[:72].decode('utf-8', errors='ignore')
-            
-    return pwd_context.hash(password)
+    """Securely hashes a password using native bcrypt with a strict 72-byte limit."""
+    password_bytes = password.encode('utf-8')
+    if len(password_bytes) > 72:
+        password_bytes = password_bytes[:72]
+        
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password_bytes, salt)
+    return hashed.decode('utf-8')
 
 # ── Token Logic ───────────────────────────────────────────────
 
