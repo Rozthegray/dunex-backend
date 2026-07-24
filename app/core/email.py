@@ -1,17 +1,17 @@
 import os
-import resend
 import asyncio
+import mailtrap as mt
 
 # 🚨 Pulls from your .env
-resend.api_key = os.getenv("RESEND_API_KEY")
-FROM_EMAIL = os.getenv("FROM_EMAIL", "Dunex Support <support@dunexmarkets.com>")
+MAILTRAP_TOKEN = os.getenv("MAILTRAP_TOKEN")
+FROM_EMAIL = os.getenv("FROM_EMAIL", "support@dunexmarkets.com")
 ADMIN_ALERT_EMAIL = os.getenv("ADMIN_ALERT_EMAIL", "admin@dunexmarkets.com")
 LOGO_URL = "https://res.cloudinary.com/dkpicfvgv/image/upload/icon_oo2lbm.png"
 
 def _send_api_email_sync(to_email: str, subject: str, raw_body: str, category: str):
-    """Internal helper to dispatch branded emails over HTTPS (Bypassing SMTP blocks)."""
-    if not resend.api_key:
-        print(f"[WARNING] Email skipped for {to_email}. Resend API key missing.")
+    """Internal helper to dispatch branded emails over HTTPS via Mailtrap."""
+    if not MAILTRAP_TOKEN:
+        print(f"[WARNING] Email skipped for {to_email}. Mailtrap Token missing.")
         return
 
     html_template = f"""
@@ -28,16 +28,22 @@ def _send_api_email_sync(to_email: str, subject: str, raw_body: str, category: s
     </div>
     """
 
+    # Build the Mailtrap payload
+    mail = mt.Mail(
+        sender=mt.Address(email=FROM_EMAIL, name="Dunex Support"),
+        to=[mt.Address(email=to_email)],
+        subject=subject,
+        html=html_template,
+        category=category
+    )
+
     try:
-        resend.Emails.send({
-            "from": FROM_EMAIL, 
-            "to": to_email,
-            "subject": subject,
-            "html": html_template
-        })
-        print(f"[RESEND API] {category} successfully sent to {to_email}")
+        # Fire via API, completely bypassing SMTP firewalls
+        client = mt.MailtrapClient(token=MAILTRAP_TOKEN)
+        client.send(mail)
+        print(f"[MAILTRAP API] {category} successfully sent to {to_email}")
     except Exception as e:
-        print(f"[RESEND ERROR] {category} Dispatch Failed: {e}")
+        print(f"[MAILTRAP ERROR] {category} Dispatch Failed: {e}")
 
 # 🚨 THE BRIDGE FIX: Keeps the chat router from crashing
 def _send_api_email(to_email: str, subject: str, body: str):
