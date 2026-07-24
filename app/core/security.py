@@ -76,7 +76,7 @@ async def get_current_user(
     token: str = Depends(oauth2_scheme)
 ) -> User:
     """
-    🛑 THE FIX: Extracts user from JWT and provides it to route functions.
+    Extracts user from JWT and provides it to route functions.
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -92,8 +92,14 @@ async def get_current_user(
     except Exception:
         raise credentials_exception
 
+    # Safety net: Catch malformed token strings before they crash the UUID parser
+    try:
+        parsed_uuid = uuid.UUID(user_id)
+    except ValueError:
+        raise credentials_exception
+
     # Query the DB to find the user attached to this token
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    result = await db.execute(select(User).where(User.id == parsed_uuid))
     user = result.scalar_one_or_none()
     
     if user is None:
