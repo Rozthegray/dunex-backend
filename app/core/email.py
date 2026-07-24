@@ -66,21 +66,21 @@ def _send_api_email(to_email: str, subject: str, body: str):
 
 
 # ---------------------------------------------------------
-# Public Email Functions
+# Public Email Functions (Upgraded to Async)
 # ---------------------------------------------------------
 
-def send_onboarding_email(to_email: str, full_name: str):
+async def send_onboarding_email(to_email: str, full_name: str):
     body = f"Welcome to Dunex Markets, {full_name}. Please complete your KYC to unlock full trading capabilities."
-    _send_zoho_email(to_email, "Welcome to Dunex Markets", body, "Onboarding")
+    await asyncio.to_thread(_send_zoho_email, to_email, "Welcome to Dunex Markets", body, "Onboarding")
 
-def send_password_reset_email(to_email: str, reset_code: str):
+async def send_password_reset_email(to_email: str, reset_code: str):
     body = f"Your password reset code is: <strong>{reset_code}</strong>. This code expires in 15 minutes."
-    _send_zoho_email(to_email, "Dunex Markets: Password Reset", body, "Password Reset")
+    await asyncio.to_thread(_send_zoho_email, to_email, "Dunex Markets: Password Reset", body, "Password Reset")
 
-def send_admin_broadcast_email(to_email: str, subject: str, message_body: str):
-    _send_zoho_email(to_email, subject, message_body, "Admin Broadcast")
+async def send_admin_broadcast_email(to_email: str, subject: str, message_body: str):
+    await asyncio.to_thread(_send_zoho_email, to_email, subject, message_body, "Admin Broadcast")
 
-def send_admin_new_chat_alert(user_email: str, first_message: str):
+async def send_admin_new_chat_alert(user_email: str, first_message: str):
     body = f"""
     <h3 style="color: #D4AF37;">New Live Chat Initiated</h3>
     <p><strong>User:</strong> {user_email}</p>
@@ -88,7 +88,7 @@ def send_admin_new_chat_alert(user_email: str, first_message: str):
     <br>
     <a href="https://dunexmarkets.com/admin/chat" style="background-color: #D4AF37; color: #05050A; padding: 10px 20px; text-decoration: none; border-radius: 6px; font-weight: bold;">Reply in Dashboard</a>
     """
-    _send_zoho_email(ADMIN_ALERT_EMAIL, f"New Chat from {user_email}", body, "Live Chat Alert")
+    await asyncio.to_thread(_send_zoho_email, ADMIN_ALERT_EMAIL, f"New Chat from {user_email}", body, "Live Chat Alert")
 
 async def send_rejection_email(user_email: str, user_name: str, amount: float, reason: str):
     body = f"""
