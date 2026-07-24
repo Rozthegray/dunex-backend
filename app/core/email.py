@@ -3,14 +3,14 @@ import asyncio
 import mailtrap as mt
 
 # 🚨 Pulls from your .env
-MAILTRAP_TOKEN = os.getenv("MAILTRAP_TOKEN")
+MAILTRAP_API_TOKEN = os.getenv("MAILTRAP_TOKEN")
 FROM_EMAIL = os.getenv("FROM_EMAIL", "support@dunexmarkets.com")
 ADMIN_ALERT_EMAIL = os.getenv("ADMIN_ALERT_EMAIL", "admin@dunexmarkets.com")
 LOGO_URL = "https://res.cloudinary.com/dkpicfvgv/image/upload/icon_oo2lbm.png"
 
 def _send_api_email_sync(to_email: str, subject: str, raw_body: str, category: str):
     """Internal helper to dispatch branded emails over HTTPS via Mailtrap."""
-    if not MAILTRAP_TOKEN:
+    if not MAILTRAP-API_TOKEN:
         print(f"[WARNING] Email skipped for {to_email}. Mailtrap Token missing.")
         return
 
@@ -39,7 +39,7 @@ def _send_api_email_sync(to_email: str, subject: str, raw_body: str, category: s
 
     try:
         # Fire via API, completely bypassing SMTP firewalls
-        client = mt.MailtrapClient(token=MAILTRAP_TOKEN)
+        client = mt.MailtrapClient(token=MAILTRAP_API_TOKEN)
         client.send(mail)
         print(f"[MAILTRAP API] {category} successfully sent to {to_email}")
     except Exception as e:
