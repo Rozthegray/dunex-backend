@@ -172,9 +172,10 @@ async def websocket_user_endpoint(websocket: WebSocket, user_id: str):
                             "user_email": user_row.email if user_row else "unknown",
                             "user_name": (user_row.full_name or user_row.email) if user_row else "Unknown",
                         })# 
-                        
-                        🚨 ZOHO TRIGGER: Notify admin if it's the first message in this session
-if user_row and manager.should_notify_admin(user_id):
+                      
+                    
+                    
+    if user_row and manager.should_notify_admin(user_id):
     try:
         send_admin_new_chat_alert(user_row.email, content)
         # 🚨 NEW: Fire to Telegram immediately!
