@@ -1,7 +1,7 @@
 import os
 import httpx
 
-# 🚨 Removed the fallback text so we know immediately if Render misses the variables
+# 🚨 Removed the fallback text so we know immediately if Render misses the variable
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_ADMIN_CHAT_ID = os.getenv("TELEGRAM_ADMIN_CHAT_ID")
 
@@ -25,7 +25,7 @@ async def dispatch_telegram_alert(message: str):
     # 🚨 Direct await to guarantee execution before the user's request closes
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(url, json=payload, timeout=5.0)
+            response = await client.post(url, json=payload, timeout=10.0)
             
             # If Telegram blocks it, this prints the exact reason to your Render logs
             if response.status_code != 200:
