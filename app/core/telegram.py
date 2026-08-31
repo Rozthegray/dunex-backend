@@ -40,19 +40,22 @@ async def dispatch_telegram_alert(message: str):
 # 🚨 SPECIFIC EVENT TRIGGERS (Live Chat, Users, Emails)
 # ─────────────────────────────────────────────
 
+# 🚨 Master URL for your Admin Dashboard
+ADMIN_URL = "https://dunexmarkets.com/admin"
+
 async def notify_telegram_new_user(email: str):
     """Trigger when a new user registers."""
-    msg = f"👤 <b>New User Registration</b>\n<b>Email:</b> {email}"
+    msg = f"👤 <b>New User Registration</b>\n<b>Email:</b> {email}\n\n🔗 <a href='{ADMIN_URL}/users'>View User</a>"
     await dispatch_telegram_alert(msg)
 
 async def notify_telegram_live_chat(email: str, message: str):
     """Trigger when a user sends a message in the Live Chat."""
-    msg = f"💬 <b>New Live Chat</b>\n<b>User:</b> {email}\n<b>Message:</b> {message[:100]}"
+    msg = f"💬 <b>New Live Chat</b>\n<b>User:</b> {email}\n<b>Message:</b> {message[:100]}\n\n🔗 <a href='{ADMIN_URL}/chat'>Reply in Dashboard</a>"
     await dispatch_telegram_alert(msg)
 
 async def notify_telegram_support_ticket(email: str, subject: str, message: str):
     """Trigger when a user submits a support ticket."""
-    msg = f"🎫 <b>New Support Ticket</b>\n<b>User:</b> {email}\n<b>Subject:</b> {subject}\n<b>Message:</b> {message[:100]}"
+    msg = f"🎫 <b>New Support Ticket</b>\n<b>User:</b> {email}\n<b>Subject:</b> {subject}\n<b>Message:</b> {message[:100]}\n\n🔗 <a href='{ADMIN_URL}/support'>View Ticket</a>"
     await dispatch_telegram_alert(msg)
     
 async def notify_telegram_email_sent(to_email: str, subject: str):
@@ -62,10 +65,10 @@ async def notify_telegram_email_sent(to_email: str, subject: str):
 
 async def notify_telegram_deposit(email: str, amount: float, currency: str = "USD"):
     """Trigger when a deposit is initiated."""
-    msg = f"💰 <b>New Deposit</b>\n<b>User:</b> {email}\n<b>Amount:</b> {amount} {currency}"
+    msg = f"💰 <b>New Deposit</b>\n<b>User:</b> {email}\n<b>Amount:</b> {amount} {currency}\n\n🔗 <a href='{ADMIN_URL}/transactions'>View Deposit</a>"
     await dispatch_telegram_alert(msg)
 
 async def notify_telegram_withdrawal(email: str, amount: float, currency: str = "USD"):
     """Trigger when a withdrawal is requested."""
-    msg = f"🏦 <b>Withdrawal Request</b>\n<b>User:</b> {email}\n<b>Amount:</b> {amount} {currency}"
+    msg = f"🏦 <b>Withdrawal Request</b>\n<b>User:</b> {email}\n<b>Amount:</b> {amount} {currency}\n\n🔗 <a href='{ADMIN_URL}/transactions'>Review Withdrawal</a>"
     await dispatch_telegram_alert(msg)
