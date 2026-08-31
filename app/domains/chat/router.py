@@ -171,14 +171,18 @@ async def websocket_user_endpoint(websocket: WebSocket, user_id: str):
                             "user_id": user_id,
                             "user_email": user_row.email if user_row else "unknown",
                             "user_name": (user_row.full_name or user_row.email) if user_row else "Unknown",
-                        })
+                        })# 
+                        
+                        🚨 ZOHO TRIGGER: Notify admin if it's the first message in this session
+if user_row and manager.should_notify_admin(user_id):
+    try:
+        send_admin_new_chat_alert(user_row.email, content)
+        # 🚨 NEW: Fire to Telegram immediately!
+        await notify_telegram_live_chat(user_row.email, content)
+    except Exception as e:
+        print(f"[WS] Admin notify failed: {e}")
 
-                        # 🚨 ZOHO TRIGGER: Notify admin if it's the first message in this session
-                        if user_row and manager.should_notify_admin(user_id):
-                            try:
-                                send_admin_new_chat_alert(user_row.email, content)
-                            except Exception as e:
-                                print(f"[WS] Zoho Email notify failed: {e}")
+                        
 
                     except Exception as e:
                         print(f"[WS DB Error] {e}")
