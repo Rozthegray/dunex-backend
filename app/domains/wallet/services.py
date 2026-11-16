@@ -40,7 +40,8 @@ async def execute_deposit(
         destination_details=f"Method ID: {payment_method_id}" if payment_method_id else None
     )
     db.add(transaction)
-
+    # 🚨 NEW: Reset the inactivity timer on deposit
+    wallet.last_deposit_date = datetime.utcnow()
     await db.commit()
     await db.refresh(transaction)
 
