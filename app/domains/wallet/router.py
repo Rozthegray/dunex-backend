@@ -1,6 +1,7 @@
 import uuid
 import os
 import httpx
+from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, File, UploadFile, Form
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -87,11 +88,7 @@ async def get_transaction_history(current_user: User = Depends(get_current_user)
                 "id": str(tx.id),
                 "amount": float(tx.amount) if tx.amount else 0.0, 
                 "transaction_type": tx.transaction_type,
-                
-                # 🚨 THIS WAS MISSING! 
-                # Without this, the mobile app doesn't know it's a bonus/referral!
                 "wallet_type": tx.wallet_type, 
-                
                 "status": tx.status,
                 "reference": tx.reference,
                 "created_at": date_str, 
@@ -137,7 +134,14 @@ async def get_balance(current_user: User = Depends(get_current_user), db: AsyncS
         await db.commit()
         await db.refresh(wallet)
 
-    return {"cached_balance": wallet.main_balance, "currency": wallet.currency, "wallet_id": str(wallet.id)}
+    # 🚨 Expose lockdown state to the frontend
+    return {
+        "cached_balance": wallet.main_balance, 
+        "currency": wallet.currency, 
+        "wallet_id": str(wallet.id),
+        "is_locked": getattr(wallet, "is_locked", False),
+        "fine_owed": getattr(wallet, "lockdown_fine_owed", 0.0)
+    }
 
 @router.post("/deposit")
 async def request_deposit(
@@ -155,17 +159,15 @@ async def request_deposit(
         if not wallet:
             raise HTTPException(status_code=404, detail="Wallet not found.")
 
-        # Stream directly to Cloudinary
         image_data = await proof_image.read()
         proof_url = await upload_to_cloudinary(image_data, proof_image.filename)
         
         reference = f"DEP-{uuid.uuid4().hex[:12].upper()}"
         
-        # 🚨 THE FIX: Pass wallet.currency as the asset_symbol
         await services.execute_deposit(
             db=db, 
             wallet_id=wallet.id, 
-            asset_symbol=wallet.currency,  # <--- Added!
+            asset_symbol=wallet.currency, 
             amount=amount, 
             reference=reference, 
             payment_method_id=str(payment_method_id), 
@@ -190,7 +192,6 @@ async def request_withdrawal(
     db: AsyncSession = Depends(get_db),
     idempotency_key: str = Header(..., alias="Idempotency-Key")
 ):
-    # STRICT KYC GUARD: Server will reject if not verified
     if current_user.kyc_status != "verified":
         raise HTTPException(
             status_code=403, 
@@ -203,13 +204,20 @@ async def request_withdrawal(
     if not wallet:
         raise HTTPException(status_code=404, detail="Wallet not found.")
 
+    # 🚨 SECURITY GUARD: Block withdrawal if account is locked
+    if getattr(wallet, "is_locked", False):
+        fine = getattr(wallet, "lockdown_fine_owed", 500.0)
+        raise HTTPException(
+            status_code=403, 
+            detail=f"Account is locked due to inactivity. Please pay the ${fine:,.2f} fine to restore withdrawals."
+        )
+
     reference = f"WDW-{uuid.uuid4().hex[:12].upper()}"
 
-    # 🚨 THE FIX: Pass wallet.currency as the asset_symbol
     await services.execute_withdrawal(
         db=db, 
         wallet_id=wallet.id, 
-        asset_symbol=wallet.currency,  # <--- Added!
+        asset_symbol=wallet.currency, 
         amount=payload.amount, 
         reference=reference,
         destination_details=payload.destination_details 
@@ -217,7 +225,6 @@ async def request_withdrawal(
     
     await db.refresh(wallet)
 
-    # Calculate the new total for the UI response
     new_total_equity = (wallet.main_balance or 0.0) + (wallet.profit_balance or 0.0) + (wallet.bonus_balance or 0.0) + (wallet.referral_balance or 0.0)
 
     return schemas.TransactionResponse(
@@ -230,7 +237,7 @@ async def request_withdrawal(
 
 @router.get("/summary")
 async def get_wallet_summary(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """Provides the 4-balance breakdown for the mobile app dashboard."""
+    """Provides the 4-balance breakdown and lockdown state for the mobile app dashboard."""
     query = select(Wallet).where(Wallet.user_id == current_user.id).limit(1)
     wallet = (await db.execute(query)).scalar_one_or_none()
 
@@ -242,6 +249,12 @@ async def get_wallet_summary(current_user: User = Depends(get_current_user), db:
 
     total_equity = wallet.main_balance + wallet.profit_balance + wallet.bonus_balance + wallet.referral_balance
 
+    # Calculate days inactive for frontend UI progress bar/warning
+    last_deposit = getattr(wallet, "last_deposit_date", datetime.utcnow())
+    if not last_deposit:
+        last_deposit = datetime.utcnow()
+    days_inactive = (datetime.utcnow() - last_deposit).days
+
     return {
         "total_equity": total_equity,
         "balances": {
@@ -249,15 +262,24 @@ async def get_wallet_summary(current_user: User = Depends(get_current_user), db:
             "profit": wallet.profit_balance,
             "bonus": wallet.bonus_balance,
             "referral": wallet.referral_balance
+        },
+        # 🚨 UI EXPOSURE
+        "lockdown": {
+            "is_locked": getattr(wallet, "is_locked", False),
+            "fine_owed": getattr(wallet, "lockdown_fine_owed", 0.0),
+            "days_inactive": days_inactive
         }
     }
- @router.post("/reactivate")
+
+# ---------------------------------------------------------
+# 🚨 NEW: REACTIVATION ROUTE
+# ---------------------------------------------------------
+@router.post("/reactivate")
 async def pay_lockdown_fine(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Allows a user to pay the inactivity fine using their main balance."""
-    # Lock the wallet row for the transaction
     query = select(Wallet).where(Wallet.user_id == current_user.id).with_for_update()
     result = await db.execute(query)
     wallet = result.scalar_one_or_none()
@@ -265,10 +287,10 @@ async def pay_lockdown_fine(
     if not wallet:
         raise HTTPException(status_code=404, detail="Wallet not found.")
         
-    if not wallet.is_locked:
+    if not getattr(wallet, "is_locked", False):
         raise HTTPException(status_code=400, detail="Account is not locked.")
         
-    fine_amount = wallet.lockdown_fine_owed
+    fine_amount = getattr(wallet, "lockdown_fine_owed", 500.0)
     
     if wallet.main_balance < fine_amount:
         raise HTTPException(
@@ -276,15 +298,13 @@ async def pay_lockdown_fine(
             detail=f"Insufficient funds. You need ${fine_amount:.2f} in your main balance to unlock your account. Please make a deposit."
         )
 
-    # 1. Deduct the fine
     wallet.main_balance -= fine_amount
     
-    # 2. Lift the lockdown and reset the timer
+    # Lift the lockdown and reset the timer
     wallet.is_locked = False
     wallet.lockdown_fine_owed = 0.0
     wallet.last_deposit_date = datetime.utcnow()
     
-    # 3. Log the fine payment on the ledger
     transaction = LedgerTransaction(
         wallet_id=wallet.id,
         amount=-fine_amount, 
@@ -300,6 +320,6 @@ async def pay_lockdown_fine(
 
     return {
         "status": "success",
-        "message": f"Account successfully reactivated. ${fine_amount:.2f} fine processed.",
+        "message": f"Account successfully reactivated. ${fine_amount:,.2f} fine processed.",
         "new_balance": wallet.main_balance
     }
