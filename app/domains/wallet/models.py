@@ -20,15 +20,18 @@ class Wallet(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
     currency = Column(String, nullable=False, default="USD")
     
-    # 🚨 THE NEW 4-BALANCE LEDGER
+    # 🚨 THE 4-BALANCE LEDGER
     main_balance = Column(Float, default=0.0) 
     profit_balance = Column(Float, default=0.0) 
     bonus_balance = Column(Float, default=0.0) 
     referral_balance = Column(Float, default=0.0) 
     
-    owner = relationship("User", back_populates="wallets")
+    # 🚨 NEW: INACTIVITY & LOCKDOWN TRACKING
+    last_deposit_date = Column(DateTime, default=datetime.utcnow) # Resets on every deposit
+    is_locked = Column(Boolean, default=False)
+    lockdown_fine_owed = Column(Float, default=0.0) # $500 fine applied here
     
-    # 🚨 ADDED CASCADE HERE
+    owner = relationship("User", back_populates="wallets")
     transactions = relationship("LedgerTransaction", back_populates="wallet", cascade="all, delete-orphan")
 
 class LedgerTransaction(Base):
