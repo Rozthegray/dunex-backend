@@ -28,7 +28,6 @@ def _send_api_email_sync(to_email: str, subject: str, raw_body: str, category: s
     </div>
     """
 
-    # Build the Mailtrap payload
     mail = mt.Mail(
         sender=mt.Address(email=FROM_EMAIL, name="Dunex Support"),
         to=[mt.Address(email=to_email)],
@@ -38,14 +37,12 @@ def _send_api_email_sync(to_email: str, subject: str, raw_body: str, category: s
     )
 
     try:
-        # Fire via API, completely bypassing SMTP firewalls
         client = mt.MailtrapClient(token=MAILTRAP_API_TOKEN)
         client.send(mail)
         print(f"[MAILTRAP API] {category} successfully sent to {to_email}")
     except Exception as e:
         print(f"[MAILTRAP ERROR] {category} Dispatch Failed: {e}")
 
-# 🚨 THE BRIDGE FIX: Keeps the chat router from crashing
 def _send_api_email(to_email: str, subject: str, body: str):
     _send_api_email_sync(to_email, subject, body, "Chat System Alert")
 
@@ -92,3 +89,39 @@ async def send_rejection_email(user_email: str, user_name: str, amount: float, r
     </p>
     """
     await asyncio.to_thread(_send_api_email_sync, user_email, "Important Update Regarding Your Withdrawal", body, "Withdrawal Rejection")
+
+# ---------------------------------------------------------
+# 🚨 NEW: INACTIVITY & LOCKDOWN EMAILS
+# ---------------------------------------------------------
+
+async def send_lockdown_warning_email(to_email: str, full_name: str, days_left: int):
+    body = f"""
+    <h2 style="color: #F59E0B; margin-bottom: 20px;">Action Required: Account Inactivity</h2>
+    <p style="font-size: 16px; color: #E2E8F4;">Hello {full_name},</p>
+    <p style="font-size: 15px; color: #8E8E93; line-height: 1.6;">
+        We noticed you haven't initiated a deposit on Dunex Markets recently. 
+    </p>
+    <div style="background:#1e293b; border-left:4px solid #F59E0B; padding:15px; margin:20px 0; border-radius: 4px;">
+        <p style="margin: 0; color: #E2E8F4;">
+        If your account remains inactive for the next <strong>{days_left} days</strong>, it will automatically enter Lockdown Mode, which requires a <strong>$500 reactivation fee</strong> to unlock trading and withdrawals.
+        </p>
+    </div>
+    <p style="font-size: 15px; color: #8E8E93;">Please initiate a deposit to keep your account active and avoid this fine.</p>
+    """
+    await asyncio.to_thread(_send_api_email_sync, to_email, f"Action Required: {days_left} Days until Account Lockdown", body, "Lockdown Warning")
+
+async def send_lockdown_execution_email(to_email: str, full_name: str, fine_amount: float):
+    body = f"""
+    <h2 style="color: #EF4444; margin-bottom: 20px;">Account Locked Due to Inactivity</h2>
+    <p style="font-size: 16px; color: #E2E8F4;">Hello {full_name},</p>
+    <p style="font-size: 15px; color: #8E8E93; line-height: 1.6;">
+        Due to 60 consecutive days without a deposit, your Dunex Markets account has been placed into <strong>Lockdown Mode</strong>.
+    </p>
+    <div style="background:#1e293b; border-left:4px solid #EF4444; padding:15px; margin:20px 0; border-radius: 4px;">
+        <p style="margin: 0; color: #E2E8F4;">
+        Withdrawals and live trading are currently suspended. To restore full access to your funds and trading capabilities, a reactivation fine of <strong>${fine_amount:,.2f}</strong> is now required.
+        </p>
+    </div>
+    <p style="font-size: 15px; color: #8E8E93;">Log in to your dashboard to pay the fine from your existing balance or via a new deposit.</p>
+    """
+    await asyncio.to_thread(_send_api_email_sync, to_email, "Account Locked - Reactivation Required", body, "Lockdown Execution")
