@@ -11,13 +11,13 @@ from app.core.telegram import dispatch_telegram_alert
 async def execute_deposit(
     db: AsyncSession, 
     wallet_id: uuid.UUID, 
-    asset_symbol: str,  # Kept for Telegram alert
+    asset_symbol: str, 
     amount: float, 
     reference: str,
     payment_method_id: str = None,
     proof_image_url: str = None
 ):
-    """Registers a deposit request. Funds are held in pending state."""
+    """Registers a deposit request. Validates lockdown fines if applicable."""
     if amount <= 0:
         raise ValueError("Deposit amount must be strictly positive.")
 
@@ -28,26 +28,38 @@ async def execute_deposit(
     if not wallet:
         raise HTTPException(status_code=404, detail="Wallet not found.")
 
+    # 🚨 THE FORCE DEPOSIT GUARD
+    is_locked = getattr(wallet, "is_locked", False)
+    fine_owed = getattr(wallet, "lockdown_fine_owed", 500.0)
+
+    if is_locked and amount < fine_owed:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Account is locked. Your deposit must be at least ${fine_owed:,.2f} to cover the reactivation fine."
+        )
+
+    # 🚨 Tag the transaction so the Admin knows it's a reactivation
+    destination = f"Reactivation & Deposit (Method ID: {payment_method_id})" if is_locked else (f"Method ID: {payment_method_id}" if payment_method_id else None)
+
     transaction = LedgerTransaction(
         wallet_id=wallet_id,
         amount=amount, 
         transaction_type="deposit",
         wallet_type="main", 
-        # 🚨 REMOVED coin_symbol here to prevent the 500 error
         status="pending",  
         reference=reference,
         proof_url=proof_image_url, 
-        destination_details=f"Method ID: {payment_method_id}" if payment_method_id else None
+        destination_details=destination
     )
     db.add(transaction)
-    # 🚨 NEW: Reset the inactivity timer on deposit
-    wallet.last_deposit_date = datetime.utcnow()
     await db.commit()
     await db.refresh(transaction)
 
-    # 🚨 FIRE THE TELEGRAM ALERT
+    # 🚨 Dynamic Telegram Alert
+    alert_title = "🚨 <b>ACCOUNT REACTIVATION DEPOSIT</b>" if is_locked else "💰 <b>NEW DEPOSIT REQUEST</b>"
+    
     await dispatch_telegram_alert(
-        f"💰 <b>NEW DEPOSIT REQUEST</b>\n\n"
+        f"{alert_title}\n\n"
         f"<b>Asset:</b> {amount:,.4f} {asset_symbol.upper()}\n"
         f"<b>Ref:</b> <code>{reference}</code>\n"
         f"<b>Status:</b> Awaiting Approval\n\n"
