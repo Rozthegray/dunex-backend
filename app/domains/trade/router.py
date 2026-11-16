@@ -200,6 +200,14 @@ async def execute_trade(
     if not usd_wallet:
         raise HTTPException(status_code=400, detail="USD wallet not found.")
 
+    # 🚨 SECURITY GUARD: Block Spot Trading if account is locked
+    if getattr(usd_wallet, "is_locked", False):
+        fine = getattr(usd_wallet, "lockdown_fine_owed", 500.0)
+        raise HTTPException(
+            status_code=403, 
+            detail=f"Account is locked due to inactivity. Please pay the ${fine:,.2f} fine to restore trading."
+        )
+
     sub_wallet = (await db.execute(select(SubWallet).where(SubWallet.user_id == current_user.id, SubWallet.symbol == payload.symbol).with_for_update())).scalar_one_or_none()
     if not sub_wallet:
         sub_wallet = SubWallet(user_id=current_user.id, symbol=payload.symbol, balance=0.0)
@@ -306,6 +314,15 @@ async def active_trade_adjust(
     """
     if payload.symbol not in SUPPORTED_SYMBOLS:
         raise HTTPException(status_code=400, detail=f"Unsupported asset: {payload.symbol}")
+
+    # 🚨 SECURITY GUARD: We must fetch the main Wallet to check the lockdown status first
+    usd_wallet = (await db.execute(select(Wallet).where(Wallet.user_id == current_user.id))).scalar_one_or_none()
+    if usd_wallet and getattr(usd_wallet, "is_locked", False):
+        fine = getattr(usd_wallet, "lockdown_fine_owed", 500.0)
+        raise HTTPException(
+            status_code=403, 
+            detail=f"Account is locked due to inactivity. Please pay the ${fine:,.2f} fine to restore trading."
+        )
 
     try:
         current_price = await _fetch_live_price(payload.symbol)
