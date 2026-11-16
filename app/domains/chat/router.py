@@ -552,5 +552,94 @@ async def create_support_ticket(
     
     user_email = payload.email or current_user.email
 
-    # 2. 🚨 Alert the Admin via API Email
-    admin_body = f"**New Message From:** {payload.name} ({user_email})
+    # 2. 🚨 Alert the Admin via API Email (FIXED SYNTAX)
+    admin_body = f"""
+    <strong>New Message From:</strong> {payload.name} ({user_email})<br><br>
+    <strong>Subject:</strong> {payload.subject}<br><br>
+    <strong>Message:</strong><br>{payload.message}
+    """
+    
+    admin_alert_email = os.getenv("ADMIN_ALERT_EMAIL", "admin@dunexmarkets.com")
+    
+    background_tasks.add_task(
+        _send_api_email, 
+        admin_alert_email, 
+        f"New Support Message: {payload.subject}", 
+        admin_body, 
+        "Support Alert"
+    )
+
+    # 🚨 Alert the Admin via Telegram Async
+    background_tasks.add_task(
+        notify_telegram_support_ticket,
+        user_email,
+        payload.subject,
+        payload.message
+    )
+    
+    # 3. 🚨 Warm, Simple Auto-Reply to the User via API Email
+    user_body = f"""
+    <h3 style="color: #ffffff; font-size: 20px; margin-bottom: 15px;">We received your message!</h3>
+    Hello {payload.name},<br><br>
+    Thank you for reaching out to us. We have successfully received your message regarding <strong>"{payload.subject}"</strong>.<br><br>
+    Our support team is looking into it right now, and we will reply to you here via email very soon. You do not need to do anything else at this time.<br><br>
+    Warm regards,<br>
+    <strong>The Dunex Support Team</strong>
+    """
+    
+    background_tasks.add_task(
+        _send_api_email, 
+        user_email, 
+        "We received your message - Dunex Support", 
+        user_body, 
+        "Support Auto-Reply"
+    )
+    
+    return {"status": "success"}
+
+@router.get("/admin/support/users")
+async def admin_get_users_for_dropdown(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if current_user.role not in ["admin", "superadmin"]: raise HTTPException(status_code=403)
+    users = (await db.execute(select(User.id, User.email, User.full_name))).all()
+    return [{"id": str(u.id), "email": u.email, "name": u.full_name} for u in users]
+
+@router.get("/admin/support/tickets")
+async def admin_get_tickets(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if current_user.role not in ["admin", "superadmin"]: raise HTTPException(status_code=403)
+    result = await db.execute(select(SupportTicket).order_by(desc(SupportTicket.created_at)))
+    return [{"id": str(t.id), "user_email": t.provided_email, "name": t.provided_name, "subject": t.subject, "message": t.message, "status": t.status, "attachment": t.attachment_url, "created_at": t.created_at.isoformat()} for t in result.scalars().all()]
+
+
+@router.post("/admin/support/broadcast")
+async def admin_broadcast_message(
+    payload: BroadcastRequest, background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+):
+    if current_user.role not in ["admin", "superadmin"]: raise HTTPException(status_code=403)
+
+    formatted_message = payload.message.replace('\n', '<br>')
+
+    if payload.target_user_id == "all":
+        users = (await db.execute(select(User.email).where(User.is_active == True))).scalars().all()
+        for email in set(users):
+            background_tasks.add_task(_send_api_email, email, payload.subject, formatted_message, "Admin Broadcast") 
+        return {"status": "success", "recipients": len(set(users))}
+        
+    elif payload.target_user_id == "custom":
+        if not payload.custom_email:
+            raise HTTPException(status_code=400, detail="Custom email is required")
+        background_tasks.add_task(_send_api_email, payload.custom_email, payload.subject, formatted_message, "Admin Broadcast") 
+        return {"status": "success", "recipients": 1}
+        
+    else:
+        try:
+            user_uuid = uuid.UUID(payload.target_user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid target ID.")
+            
+        user = (await db.execute(select(User).where(User.id == user_uuid))).scalar_one_or_none()
+        if user:
+            background_tasks.add_task(_send_api_email, user.email, payload.subject, formatted_message, "Admin Broadcast") 
+            return {"status": "success", "recipients": 1}
+            
+        raise HTTPException(status_code=404, detail="User not found")
