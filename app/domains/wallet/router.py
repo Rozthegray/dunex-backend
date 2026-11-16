@@ -323,3 +323,54 @@ async def pay_lockdown_fine(
         "message": f"Account successfully reactivated. ${fine_amount:,.2f} fine processed.",
         "new_balance": wallet.main_balance
     }
+
+from datetime import datetime, timedelta
+from app.core.email import send_lockdown_warning_email, send_lockdown_execution_email
+
+@router.post("/admin/sweep-inactivity", tags=["Admin Cron"])
+async def trigger_inactivity_sweep(db: AsyncSession = Depends(get_db)):
+    """Triggered daily via external Cron to lock inactive accounts."""
+    now = datetime.utcnow()
+    
+    # Fetch all unlocked wallets and their owners
+    query = select(Wallet, User).join(User, Wallet.user_id == User.id).where(Wallet.is_locked == False)
+    result = await db.execute(query)
+    active_accounts = result.all()
+
+    processed_count = 0
+
+    for wallet, user in active_accounts:
+        if not wallet.last_deposit_date:
+            wallet.last_deposit_date = now
+            continue
+
+        days_inactive = (now - wallet.last_deposit_date).days
+
+        if days_inactive == 30:
+            await send_lockdown_warning_email(user.email, user.full_name or "Trader", 30)
+            processed_count += 1
+            
+        elif days_inactive == 55:
+            await send_lockdown_warning_email(user.email, user.full_name or "Trader", 5)
+            processed_count += 1
+            
+        elif days_inactive >= 60:
+            wallet.is_locked = True
+            wallet.lockdown_fine_owed = 500.00
+            await send_lockdown_execution_email(user.email, user.full_name or "Trader", 500.00)
+            
+            # Log the fine being levied on the ledger
+            fine_ledger = LedgerTransaction(
+                wallet_id=wallet.id,
+                amount=-500.00,
+                transaction_type="fee",
+                wallet_type="main",
+                status="pending",
+                reference=f"LOCKED-{uuid.uuid4().hex[:8].upper()}",
+                destination_details="Inactivity Fine Levied"
+            )
+            db.add(fine_ledger)
+            processed_count += 1
+            
+    await db.commit()
+    return {"status": "success", "accounts_processed": processed_count}
