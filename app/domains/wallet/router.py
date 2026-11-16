@@ -251,3 +251,55 @@ async def get_wallet_summary(current_user: User = Depends(get_current_user), db:
             "referral": wallet.referral_balance
         }
     }
+ @router.post("/reactivate")
+async def pay_lockdown_fine(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Allows a user to pay the inactivity fine using their main balance."""
+    # Lock the wallet row for the transaction
+    query = select(Wallet).where(Wallet.user_id == current_user.id).with_for_update()
+    result = await db.execute(query)
+    wallet = result.scalar_one_or_none()
+
+    if not wallet:
+        raise HTTPException(status_code=404, detail="Wallet not found.")
+        
+    if not wallet.is_locked:
+        raise HTTPException(status_code=400, detail="Account is not locked.")
+        
+    fine_amount = wallet.lockdown_fine_owed
+    
+    if wallet.main_balance < fine_amount:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Insufficient funds. You need ${fine_amount:.2f} in your main balance to unlock your account. Please make a deposit."
+        )
+
+    # 1. Deduct the fine
+    wallet.main_balance -= fine_amount
+    
+    # 2. Lift the lockdown and reset the timer
+    wallet.is_locked = False
+    wallet.lockdown_fine_owed = 0.0
+    wallet.last_deposit_date = datetime.utcnow()
+    
+    # 3. Log the fine payment on the ledger
+    transaction = LedgerTransaction(
+        wallet_id=wallet.id,
+        amount=-fine_amount, 
+        transaction_type="fee",
+        wallet_type="main", 
+        status="completed", 
+        reference=f"FINE-{uuid.uuid4().hex[:12].upper()}",
+        destination_details="Inactivity Reactivation Fine"
+    )
+    db.add(transaction)
+    
+    await db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Account successfully reactivated. ${fine_amount:.2f} fine processed.",
+        "new_balance": wallet.main_balance
+    }
