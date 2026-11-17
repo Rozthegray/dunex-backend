@@ -1,7 +1,7 @@
 import uuid
 import os
 import httpx
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, File, UploadFile, Form
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,7 @@ from app.db.session import get_db
 from app.core.security import get_current_user
 from app.core.idempotency import IdempotentRoute
 from app.domains.users.models import User
+from app.core.email import send_lockdown_warning_email, send_lockdown_execution_email
 from app.domains.wallet.models import Wallet, PaymentMethod, LedgerTransaction
 from app.domains.wallet import schemas, services
 
@@ -271,61 +272,6 @@ async def get_wallet_summary(current_user: User = Depends(get_current_user), db:
         }
     }
 
-# ---------------------------------------------------------
-# 🚨 NEW: REACTIVATION ROUTE
-# ---------------------------------------------------------
-@router.post("/reactivate")
-async def pay_lockdown_fine(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Allows a user to pay the inactivity fine using their main balance."""
-    query = select(Wallet).where(Wallet.user_id == current_user.id).with_for_update()
-    result = await db.execute(query)
-    wallet = result.scalar_one_or_none()
-
-    if not wallet:
-        raise HTTPException(status_code=404, detail="Wallet not found.")
-        
-    if not getattr(wallet, "is_locked", False):
-        raise HTTPException(status_code=400, detail="Account is not locked.")
-        
-    fine_amount = getattr(wallet, "lockdown_fine_owed", 500.0)
-    
-    if wallet.main_balance < fine_amount:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Insufficient funds. You need ${fine_amount:.2f} in your main balance to unlock your account. Please make a deposit."
-        )
-
-    wallet.main_balance -= fine_amount
-    
-    # Lift the lockdown and reset the timer
-    wallet.is_locked = False
-    wallet.lockdown_fine_owed = 0.0
-    wallet.last_deposit_date = datetime.utcnow()
-    
-    transaction = LedgerTransaction(
-        wallet_id=wallet.id,
-        amount=-fine_amount, 
-        transaction_type="fee",
-        wallet_type="main", 
-        status="completed", 
-        reference=f"FINE-{uuid.uuid4().hex[:12].upper()}",
-        destination_details="Inactivity Reactivation Fine"
-    )
-    db.add(transaction)
-    
-    await db.commit()
-
-    return {
-        "status": "success",
-        "message": f"Account successfully reactivated. ${fine_amount:,.2f} fine processed.",
-        "new_balance": wallet.main_balance
-    }
-
-from datetime import datetime, timedelta
-from app.core.email import send_lockdown_warning_email, send_lockdown_execution_email
 
 @router.post("/admin/sweep-inactivity", tags=["Admin Cron"])
 async def trigger_inactivity_sweep(db: AsyncSession = Depends(get_db)):
