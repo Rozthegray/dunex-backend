@@ -10,7 +10,7 @@ from sqlalchemy.orm import joinedload
 from pydantic import BaseModel
 from typing import Optional
 import uuid
-from datetime import timedelta
+from datetime import timedelta, datetime
 from app.core.security import create_access_token
 
 from app.db.session import get_db
