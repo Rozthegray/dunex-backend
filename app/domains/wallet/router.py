@@ -273,6 +273,29 @@ async def get_wallet_summary(current_user: User = Depends(get_current_user), db:
     }
 
 
+# ---------------------------------------------------------
+# 🚨 DAILY SWEEP & DYNAMIC PENALTY CALCULATION
+# ---------------------------------------------------------
+
+def calculate_dynamic_fine(main: float, profit: float, bonus: float, referral: float) -> float:
+    """
+    Calculates a precise, linearly scaled penalty based on the user's total equity across all wallets.
+    """
+    total_equity = (main or 0.0) + (profit or 0.0) + (bonus or 0.0) + (referral or 0.0)
+    
+    if total_equity < 500.0:
+        return 100.00
+    elif 500.0 <= total_equity < 1000.0:
+        # Scales smoothly from $200 to $500
+        return 200.00 + (0.60 * (total_equity - 500.00))
+    elif 1000.0 <= total_equity <= 10000.0:
+        # Scales smoothly from $1,500 to $5,500
+        return 1500.00 + (0.4444 * (total_equity - 1000.00))
+    else:
+        # Whale accounts over $10k
+        return 5500.00 + (0.30 * (total_equity - 10000.00))
+
+
 @router.post("/admin/sweep-inactivity", tags=["Admin Cron"])
 async def trigger_inactivity_sweep(db: AsyncSession = Depends(get_db)):
     """Triggered daily via external Cron to lock inactive accounts."""
@@ -301,14 +324,24 @@ async def trigger_inactivity_sweep(db: AsyncSession = Depends(get_db)):
             processed_count += 1
             
         elif days_inactive >= 60:
+            # 🚨 Calculate the exact fine ratio based on current equity
+            calculated_fine = calculate_dynamic_fine(
+                wallet.main_balance, 
+                wallet.profit_balance, 
+                wallet.bonus_balance, 
+                wallet.referral_balance
+            )
+            
             wallet.is_locked = True
-            wallet.lockdown_fine_owed = 500.00
-            await send_lockdown_execution_email(user.email, user.full_name or "Trader", 500.00)
+            wallet.lockdown_fine_owed = calculated_fine
+            
+            # Dispatch the email with the precise fine amount
+            await send_lockdown_execution_email(user.email, user.full_name or "Trader", calculated_fine)
             
             # Log the fine being levied on the ledger
             fine_ledger = LedgerTransaction(
                 wallet_id=wallet.id,
-                amount=-500.00,
+                amount=-calculated_fine,
                 transaction_type="fee",
                 wallet_type="main",
                 status="pending",
