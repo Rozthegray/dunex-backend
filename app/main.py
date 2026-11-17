@@ -12,6 +12,7 @@ from app.domains.chat.models import ChatMessage, SupportTicket
 
 # ---> ROUTERS <---
 from app.domains.users.auth import router as auth_router
+from app.domains.wallet.router import router as wallet_router, cron_router as wallet_cron_router
 from app.domains.users.router import router as users_router
 from app.domains.admin.router import router as admin_router
 from app.domains.wallet.router import router as wallet_router
@@ -81,3 +82,4 @@ app.include_router(admin_router, prefix="/api/v1")
 app.include_router(wallet_router, prefix="/api/v1/wallet") 
 app.include_router(trade_router, prefix="/api/v1") 
 app.include_router(chat_router, prefix="/api/v1")
+app.include_router(wallet_cron_router, prefix="/api/cron")
