@@ -404,11 +404,11 @@ async def get_orders(status: Optional[str] = "pending", _admin=Depends(require_a
 async def process_order(
     order_id: str, 
     action: str, 
-    reason: Optional[str] = Query(None, description="Reason for rejection"), # 🚨 Added Reason Catcher
+    reason: Optional[str] = Query(None, description="Reason for rejection"),
     _admin=Depends(require_admin), 
     db: AsyncSession = Depends(get_db)
 ):
-    """Approves/rejects orders AND powers the Affiliate Referral Engine."""
+    """Approves/rejects orders AND powers the Affiliate Referral Engine and Lockdown Forgiveness."""
     if action not in ["approve", "reject"]: raise HTTPException(status_code=400, detail="Invalid action.")
 
     tx = (await db.execute(select(LedgerTransaction).where(LedgerTransaction.id == uuid.UUID(order_id)))).scalar_one_or_none()
@@ -421,9 +421,48 @@ async def process_order(
     if action == "approve":
         tx.status = "completed"
         if tx.transaction_type == "deposit":
-            wallet.main_balance += abs(tx.amount)
+            deposit_amount = abs(tx.amount)
             
-            # AUTOMATED AFFILIATE COMMISSION ENGINE
+            # 🚨 THE NEW LOCKDOWN DEDUCTION GUARD
+            is_locked = getattr(wallet, "is_locked", False)
+            fine_owed = getattr(wallet, "lockdown_fine_owed", 0.0)
+            
+            if is_locked and fine_owed > 0:
+                if deposit_amount >= fine_owed:
+                    # Deduct fine from deposit
+                    deposit_amount -= fine_owed
+                    
+                    # Unlock the wallet
+                    wallet.is_locked = False
+                    wallet.lockdown_fine_owed = 0.0
+                    wallet.last_deposit_date = datetime.utcnow()
+                    
+                    # Log the fine payment on the ledger
+                    fine_tx = LedgerTransaction(
+                        wallet_id=wallet.id,
+                        amount=-fine_owed, 
+                        transaction_type="fee",
+                        wallet_type="main", 
+                        status="completed", 
+                        reference=f"FINE-{uuid.uuid4().hex[:12].upper()}",
+                        destination_details="Inactivity Reactivation Fine Automatically Deducted"
+                    )
+                    db.add(fine_tx)
+                else:
+                    # Failsafe: Should be caught by the frontend/user route, but if a smaller deposit slips through
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Cannot approve. The deposit of ${deposit_amount} does not cover the ${fine_owed} fine."
+                    )
+            else:
+                # Normal deposit: reset the inactivity timer
+                wallet.last_deposit_date = datetime.utcnow()
+
+            # Credit the remaining balance (if any) to the user's wallet
+            if deposit_amount > 0:
+                wallet.main_balance += deposit_amount
+            
+            # AUTOMATED AFFILIATE COMMISSION ENGINE (Based on total deposited amount)
             if user and user.referred_by_id:
                 commission_amount = abs(tx.amount) * 0.10 # 10% Cut
                 
